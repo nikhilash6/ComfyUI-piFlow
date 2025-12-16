@@ -1,15 +1,11 @@
-import logging
 import math
 import torch
 import comfy
 from functools import partial
-from typing import TYPE_CHECKING
 from enum import Enum
 from comfy.model_base import BaseModel, convert_tensor, QwenImage as _QwenImage, Flux as _Flux, utils
 from .piflow_policies import POLICY_CLASSES
 from . import architectures
-if TYPE_CHECKING:
-    from comfy.model_patcher import ModelPatcher
 
 
 class ModelType(Enum):
@@ -51,60 +47,33 @@ class ModelSamplingPiFlow(torch.nn.Module):
         return self.warp_t(1.0 - percent)
 
 
+# stash original
+_original_model_sampling = comfy.model_base.model_sampling
+
+
 def model_sampling(model_config, model_type):
     if model_type == ModelType.PIFLOW:
         c = comfy.model_sampling.CONST
         s = ModelSamplingPiFlow
-    else:
-        raise ValueError("Unsupported model type {}".format(model_type))
 
-    class ModelSampling(s, c):
-        pass
+        class ModelSampling(s, c):
+            pass
 
-    return ModelSampling(model_config)
+        return ModelSampling(model_config)
+
+    # fallback to original
+    return _original_model_sampling(model_config, model_type)
+
+
+# patch comfyui model_sampling
+comfy.model_base.model_sampling = model_sampling
 
 
 class BasePiFlow(BaseModel):
 
     def __init__(self, model_config, diffusion_model, model_type=ModelType.PIFLOW, device=None):
-        super(BaseModel, self).__init__()
-
-        unet_config = model_config.unet_config
-        self.latent_format = model_config.latent_format
-        self.model_config = model_config
-        self.manual_cast_dtype = model_config.manual_cast_dtype
-        self.device = device
-        self.current_patcher: 'ModelPatcher' = None
-
-        if not unet_config.get("disable_unet_model_creation", False):
-            if model_config.custom_operations is None:
-                fp8 = model_config.optimizations.get("fp8", False)
-                kwargs = dict(fp8_optimizations=fp8, scaled_fp8=model_config.scaled_fp8,)
-                if model_config and hasattr(model_config, 'layer_quant_config') and model_config.layer_quant_config:
-                    kwargs.update(model_config=model_config)
-                operations = comfy.ops.pick_operations(
-                    unet_config.get("dtype", None), self.manual_cast_dtype, **kwargs)
-            else:
-                operations = model_config.custom_operations
-            self.diffusion_model = diffusion_model(**unet_config, device=device, operations=operations)
-            self.diffusion_model.eval()
-            if comfy.model_management.force_channels_last():
-                self.diffusion_model.to(memory_format=torch.channels_last)
-                logging.debug("using channels last mode for diffusion model")
-            logging.info("model weight dtype {}, manual cast: {}".format(self.get_dtype(), self.manual_cast_dtype))
-        self.model_type = model_type
-        self.model_sampling = model_sampling(model_config, model_type)
-
-        self.adm_channels = unet_config.get("adm_in_channels", None)
-        if self.adm_channels is None:
-            self.adm_channels = 0
-
-        self.concat_keys = ()
-        logging.info("model_type {}".format(model_type.name))
-        logging.debug("adm {}".format(self.adm_channels))
-        self.memory_usage_factor = model_config.memory_usage_factor
-        self.memory_usage_factor_conds = ()
-        self.memory_usage_shape_process = {}
+        BaseModel.__init__(
+            self, model_config, model_type=model_type, device=device, unet_model=diffusion_model)
 
         policy_config = model_config.policy_config.copy()
         policy_type = policy_config.pop("type")

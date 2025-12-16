@@ -5,6 +5,10 @@ import folder_paths
 from comfy import model_management
 from comfy.model_detection import unet_prefix_from_state_dict, convert_diffusers_mmdit, detect_unet_config
 from .modules.model_detection import model_config_from_piflow
+try:
+    from comfy.utils import convert_old_quants
+except ImportError:
+    convert_old_quants = None
 
 
 def convert_diffusers_to_comfyui(state_dict, diffusers_weight, comfy_weight_map):
@@ -104,13 +108,19 @@ def load_piflow_model_state_dict(
 
     parameters = comfy.utils.calculate_parameters(new_sd)
 
+    if convert_old_quants is not None:
+        if model_options.get("custom_operations", None) is None:
+            new_sd, metadata = convert_old_quants(
+                new_sd, "", metadata=metadata)
+
     model_config = model_config_from_piflow(new_sd, "", metadata=metadata)
     if model_config is None:
         return None
 
     offload_device = model_management.unet_offload_device()
     unet_weight_dtype = list(model_config.supported_inference_dtypes)
-    if model_config.scaled_fp8 is not None:
+    if (getattr(model_config, 'scaled_fp8', None) is not None
+            or getattr(model_config, 'quant_config', None) is not None):
         weight_dtype = None
 
     dtype = model_options.get("dtype", None)
@@ -122,7 +132,12 @@ def load_piflow_model_state_dict(
         unet_dtype = dtype
 
     load_device = model_management.get_torch_device()
-    if getattr(model_config, 'layer_quant_config', None) is not None:
+
+    if hasattr(model_config, 'quant_config'):
+        has_quant = model_config.quant_config is not None
+    else:
+        has_quant = getattr(model_config, 'layer_quant_config', None) is not None
+    if has_quant:
         manual_cast_dtype = model_management.unet_manual_cast(
             None, load_device, model_config.supported_inference_dtypes)
     else:
