@@ -133,6 +133,10 @@ This code repository is licensed under the Apache-2.0 License. Models used in th
 
 ## Changelog
 
+- **v1.0.6** (2025-12-16)
+  - Fix compatibility for ComfyUI v0.4.0 (new quantization)
+  - Improve GMFlow numerical stability
+
 - **v1.0.5** (2025-11-11)
   - Add experimental support for polynomial-based DX policy.
   - Update README.md and pi-Flux workflow (highlighting the FluxGuidance setting).
