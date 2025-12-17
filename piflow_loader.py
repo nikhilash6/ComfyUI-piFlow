@@ -152,7 +152,7 @@ def load_piflow_model_state_dict(
 
         # unset scales in the base model for updated layers
         for layer in updated_weight_layers:
-            for scale_postfix in ["scale_input", "scale_weight"]:
+            for scale_postfix in ["scale_input", "scale_weight", "input_scale", "weight_scale"]:
                 scale_key = '.'.join([layer, scale_postfix])
                 if scale_key in new_sd and scale_key not in updated_keys:
                     del new_sd[scale_key]
