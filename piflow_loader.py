@@ -8,12 +8,116 @@ import torch
 import comfy
 import folder_paths
 from comfy import model_management
+from comfy.utils import swap_scale_shift
 from comfy.model_detection import unet_prefix_from_state_dict, convert_diffusers_mmdit, detect_unet_config
 from .modules.model_detection import model_config_from_piflow
 try:
     from comfy.utils import convert_old_quants
 except ImportError:
     convert_old_quants = None
+
+
+old_flux_to_diffusers = comfy.utils.flux_to_diffusers
+
+
+def flux_to_diffusers(mmdit_config, output_prefix=""):
+    if mmdit_config['image_model'] == 'flux':
+        return old_flux_to_diffusers(mmdit_config, output_prefix=output_prefix)
+
+    n_double_layers = mmdit_config.get("depth", 0)
+    n_single_layers = mmdit_config.get("depth_single_blocks", 0)
+    hidden_size = mmdit_config.get("hidden_size", 0)
+
+    key_map = {}
+
+    # --- double blocks: diffusers transformer_blocks.{i} -> comfy double_blocks.{i} ---
+    for index in range(n_double_layers):
+        prefix_from = f"transformer_blocks.{index}"
+        prefix_to = f"{output_prefix}double_blocks.{index}"
+
+        # q/k/v for image stream packed into img_attn.qkv.weight
+        k_attn = f"{prefix_from}.attn."
+        qkv_img = f"{prefix_to}.img_attn.qkv.weight"
+        key_map[f"{k_attn}to_q.weight"] = (qkv_img, (0, 0, hidden_size))
+        key_map[f"{k_attn}to_k.weight"] = (qkv_img, (0, hidden_size, hidden_size))
+        key_map[f"{k_attn}to_v.weight"] = (qkv_img, (0, hidden_size * 2, hidden_size))
+
+        # q/k/v for text(additional) stream packed into txt_attn.qkv.weight
+        qkv_txt = f"{prefix_to}.txt_attn.qkv.weight"
+        key_map[f"{k_attn}add_q_proj.weight"] = (qkv_txt, (0, 0, hidden_size))
+        key_map[f"{k_attn}add_k_proj.weight"] = (qkv_txt, (0, hidden_size, hidden_size))
+        key_map[f"{k_attn}add_v_proj.weight"] = (qkv_txt, (0, hidden_size * 2, hidden_size))
+
+        # the rest are mostly 1:1 renames
+        block_map = {
+            # attn proj
+            "attn.to_out.0.weight": "img_attn.proj.weight",
+            "attn.to_add_out.weight": "txt_attn.proj.weight",
+
+            # mlps
+            "ff.linear_in.weight": "img_mlp.0.weight",
+            "ff.linear_out.weight": "img_mlp.2.weight",
+            "ff_context.linear_in.weight": "txt_mlp.0.weight",
+            "ff_context.linear_out.weight": "txt_mlp.2.weight",
+
+            # norms
+            "attn.norm_q.weight": "img_attn.norm.query_norm.scale",
+            "attn.norm_k.weight": "img_attn.norm.key_norm.scale",
+            "attn.norm_added_q.weight": "txt_attn.norm.query_norm.scale",
+            "attn.norm_added_k.weight": "txt_attn.norm.key_norm.scale",
+        }
+        for k_from, k_to in block_map.items():
+            key_map[f"{prefix_from}.{k_from}"] = f"{prefix_to}.{k_to}"
+
+    # --- single blocks: diffusers single_transformer_blocks.{i} -> comfy single_blocks.{i} ---
+    for index in range(n_single_layers):
+        prefix_from = f"single_transformer_blocks.{index}"
+        prefix_to = f"{output_prefix}single_blocks.{index}"
+
+        # Flux.2 diffusers already fuses (qkv + mlp_in) into one big mat:
+        #   to_qkv_mlp_proj.weight [55296, 6144]  <->  comfy linear1.weight [55296, 6144]
+        # and attn.to_out.weight [6144, 24576]   <->  comfy linear2.weight [6144, 24576]
+        key_map[f"{prefix_from}.attn.to_qkv_mlp_proj.weight"] = f"{prefix_to}.linear1.weight"
+        key_map[f"{prefix_from}.attn.to_out.weight"] = f"{prefix_to}.linear2.weight"
+
+        # norms
+        key_map[f"{prefix_from}.attn.norm_q.weight"] = f"{prefix_to}.norm.query_norm.scale"
+        key_map[f"{prefix_from}.attn.norm_k.weight"] = f"{prefix_to}.norm.key_norm.scale"
+
+    # --- top-level modules ---
+    MAP_BASIC = {
+        # embeds
+        ("img_in.weight", "x_embedder.weight"),
+        ("txt_in.weight", "context_embedder.weight"),
+
+        # time + guidance (Flux.2 diffusers name)
+        ("time_in.in_layer.weight", "time_guidance_embed.timestep_embedder.linear_1.weight"),
+        ("time_in.out_layer.weight", "time_guidance_embed.timestep_embedder.linear_2.weight"),
+        ("guidance_in.in_layer.weight", "time_guidance_embed.guidance_embedder.linear_1.weight"),
+        ("guidance_in.out_layer.weight", "time_guidance_embed.guidance_embedder.linear_2.weight"),
+
+        # stream modulation
+        ("double_stream_modulation_img.lin.weight", "double_stream_modulation_img.linear.weight"),
+        ("double_stream_modulation_txt.lin.weight", "double_stream_modulation_txt.linear.weight"),
+        ("single_stream_modulation.lin.weight", "single_stream_modulation.linear.weight"),
+
+        # output head
+        ("final_layer.linear.weight", "proj_out.weight"),
+        ("final_layer.adaLN_modulation.1.weight", "norm_out.linear.weight", swap_scale_shift),
+    }
+
+    for item in MAP_BASIC:
+        if len(item) == 3:
+            comfy_k, diffusers_k, fn = item
+            key_map[diffusers_k] = (f"{output_prefix}{comfy_k}", None, fn)
+        else:
+            comfy_k, diffusers_k = item
+            key_map[diffusers_k] = f"{output_prefix}{comfy_k}"
+
+    return key_map
+
+
+comfy.utils.flux_to_diffusers = flux_to_diffusers
 
 
 def import_comfyui_gguf_nodes():
@@ -130,12 +234,12 @@ def load_piflow_model_state_dict(
 
         key_mapping = {}
         base_image_model = base_unet_config["image_model"]
-        if base_image_model == 'flux':  # requires conversion
+        if base_image_model in ('flux', 'flux2'):  # requires conversion
             key_mapping = comfy.utils.flux_to_diffusers(base_unet_config, output_prefix="")
 
         for k in adapter_sd.keys():
             if "lora" in k:
-                if base_image_model == 'flux' and not k.startswith("transformer."):
+                if base_image_model in ('flux', 'flux2') and not k.startswith("transformer."):
                     lora_sd["transformer." + k] = adapter_sd[k]
                 else:
                     lora_sd[k] = adapter_sd[k]

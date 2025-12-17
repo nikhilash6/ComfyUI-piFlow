@@ -126,4 +126,66 @@ class Flux(supported_models_base.BASE):
         return supported_models_base.ClipTarget(comfy.text_encoders.flux.FluxTokenizer, comfy.text_encoders.flux.flux_clip(**t5_detect))
 
 
-models = [GMQwenImage, QwenImage, GMFlux, Flux]
+class GMFlux2(supported_models_base.BASE):
+    unet_config = {
+        "image_model": "gm_flux2",
+    }
+
+    policy_config = {
+        "type": "GMFlow",
+    }
+
+    sampling_settings = {
+        'multiplier': 1.0,
+        'patch_size': (2, 2)
+    }
+
+    unet_extra_config = {}
+    latent_format = latent_formats.Flux2
+
+    memory_usage_factor = 3.1 * (2.0 * 2.0) * 2.36
+
+    supported_inference_dtypes = [torch.bfloat16, torch.float16, torch.float32]
+
+    vae_key_prefix = ["vae."]
+    text_encoder_key_prefix = ["text_encoders."]
+
+    def get_model(self, state_dict, prefix="", device=None):
+        out = model_base.GMFlux2(self, device=device)
+        return out
+
+    def clip_target(self, state_dict={}):
+        return None
+
+
+class Flux2(supported_models_base.BASE):
+    unet_config = {
+        "image_model": "flux2",
+    }
+
+    policy_config = {}
+
+    sampling_settings = {
+        'multiplier': 1.0,
+        'patch_size': (2, 2)
+    }
+
+    unet_extra_config = {}
+    latent_format = latent_formats.Flux2
+
+    memory_usage_factor = 3.1 * (2.0 * 2.0) * 2.36
+
+    supported_inference_dtypes = [torch.bfloat16, torch.float16, torch.float32]
+
+    vae_key_prefix = ["vae."]
+    text_encoder_key_prefix = ["text_encoders."]
+
+    def get_model(self, state_dict, prefix="", device=None):
+        out = model_base.Flux2(self, device=device)
+        return out
+
+    def clip_target(self, state_dict={}):
+        return None
+
+
+models = [GMQwenImage, QwenImage, GMFlux, Flux, GMFlux2, Flux2]

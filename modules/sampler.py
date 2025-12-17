@@ -216,7 +216,13 @@ class _PiFlowSampler(Sampler):
 
     def sample(self, model_wrap, sigmas, extra_args, callback, noise,
                latent_image=None, denoise_mask=None, disable_pbar=False):
-        x_t_src = model_wrap.inner_model.model_sampling.noise_scaling(
+        noise = self.model_sampling.unpatchify(noise)
+        if latent_image is not None:
+            latent_image = self.model_sampling.unpatchify(latent_image)
+        if denoise_mask is not None:
+            denoise_mask = self.model_sampling.unpatchify(denoise_mask)
+
+        x_t_src = self.model_sampling.noise_scaling(
             sigmas[0], noise, latent_image)
 
         sigmas_dst, m_vals = self.calculate_sigmas_dst(sigmas)
@@ -265,7 +271,9 @@ class _PiFlowSampler(Sampler):
 
             x_t_src = x_t_to
 
-        samples = model_wrap.inner_model.model_sampling.inverse_noise_scaling(sigmas[-1], x_t_src)
+        samples = self.model_sampling.inverse_noise_scaling(sigmas[-1], x_t_src)
+
+        samples = self.model_sampling.patchify(samples)
         return samples
 
 
@@ -296,6 +304,14 @@ class PiFlowSampler:
             self, noise, conditioning, temperature, latent_image=None,
             denoise_mask=None, callback=None, disable_pbar=False, seed=None):
         policy_sampler = _PolicySampler(self.model)
+
+        model_sampling = self.model.get_model_object("model_sampling")
+        for conditioning_single in conditioning:
+            conditioning_dict = conditioning_single[1]
+            if 'reference_latents' in conditioning_dict:
+                conditioning_dict['reference_latents'] = [
+                    model_sampling.unpatchify(x) for x in conditioning_dict['reference_latents']]
+
         policy_sampler.set_conds(conditioning, [])
         policy_sampler.set_cfg(1.0)
         sampler = _PiFlowSampler(

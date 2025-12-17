@@ -25,7 +25,7 @@ def _infer_gm_cfg(sd: Dict[str, torch.Tensor], prefix: str, base_config: Dict):
     proj_out_means:      (num_gaussians * out_channels, inner_dim)
     """
     base_image_model = base_config["image_model"]
-    if base_image_model in ('qwen_image', 'flux'):
+    if base_image_model in ('qwen_image', 'flux', 'flux2'):
         patch_size = 2
     else:
         raise ValueError(f"Unknown base image model: {base_image_model}")
@@ -34,7 +34,7 @@ def _infer_gm_cfg(sd: Dict[str, torch.Tensor], prefix: str, base_config: Dict):
     proj_out_logweights_out_channels = proj_out_logweights.shape[0]
     num_gaussians = proj_out_logweights_out_channels // (patch_size * patch_size)
     out_channels = proj_out_means.shape[0] // max(1, num_gaussians)
-    if base_image_model == 'flux':
+    if base_image_model in ('flux', 'flux2'):
         out_channels = out_channels // 4
     return patch_size, num_gaussians, out_channels
 
@@ -80,7 +80,7 @@ def detect_piflow_config(state_dict, key_prefix, metadata=None):
             out_channels = proj_out_weight.shape[0] // (patch_size * patch_size)
             unet_config = base_config.copy()
             unet_config["out_channels"] = out_channels
-        elif base_image_model == 'flux':
+        elif base_image_model in ('flux', 'flux2'):
             # infer out_channels from proj_out.weight
             patch_size = base_config.get("patch_size", 2)
             proj_out_weight = state_dict[f"{key_prefix}final_layer.linear.weight"]

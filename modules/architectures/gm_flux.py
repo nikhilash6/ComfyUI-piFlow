@@ -1,3 +1,4 @@
+import inspect
 import torch
 import torch.nn as nn
 from comfy.ldm.flux.layers import apply_mod, timestep_embedding
@@ -7,13 +8,14 @@ from comfy.ldm.flux.model import Flux
 class LastLayer(nn.Module):
     """Modulation only, no linear projection to out_channels."""
 
-    def __init__(self, hidden_size: int, dtype=None, device=None, operations=None):
+    def __init__(self, hidden_size: int, bias=True, dtype=None, device=None, operations=None):
         super().__init__()
-        self.norm_final = operations.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6, dtype=dtype,
-                                               device=device)
-        self.adaLN_modulation = nn.Sequential(nn.SiLU(),
-                                              operations.Linear(hidden_size, 2 * hidden_size, bias=True, dtype=dtype,
-                                                                device=device))
+        self.norm_final = operations.LayerNorm(
+            hidden_size, elementwise_affine=False, eps=1e-6, dtype=dtype, device=device)
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(),
+            operations.Linear(hidden_size, 2 * hidden_size, bias=bias, dtype=dtype, device=device)
+        )
 
     def forward(self, x, vec, modulation_dims=None):
         if vec.ndim == 2:
@@ -47,7 +49,11 @@ class GMFlux(Flux):
             self.gm_num_logstd_layers = gm_num_logstd_layers
 
             self.final_layer = LastLayer(
-                self.hidden_size, dtype=dtype, device=device, operations=operations)
+                self.hidden_size,
+                bias=getattr(self.params, 'ops_bias', True),
+                dtype=dtype,
+                device=device,
+                operations=operations)
             self.proj_out_means = operations.Linear(
                 self.hidden_size, self.num_gaussians * self.out_channels,
                 bias=True, device=device)
@@ -83,9 +89,6 @@ class GMFlux(Flux):
             transformer_options={},
             attn_mask=None):
 
-        if y is None:
-            y = torch.zeros((img.shape[0], self.params.vec_in_dim), device=img.device, dtype=img.dtype)
-
         patches = transformer_options.get("patches", {})
         patches_replace = transformer_options.get("patches_replace", {})
         if img.ndim != 3 or txt.ndim != 3:
@@ -98,8 +101,16 @@ class GMFlux(Flux):
             if guidance is not None:
                 vec = vec + self.guidance_in(timestep_embedding(guidance, 256).to(img.dtype))
 
-        vec = vec + self.vector_in(y[:, :self.params.vec_in_dim])
+        if self.vector_in is not None:
+            if y is None:
+                y = torch.zeros((img.shape[0], self.params.vec_in_dim), device=img.device, dtype=img.dtype)
+            vec = vec + self.vector_in(y[:, :self.params.vec_in_dim])
+
         txt = self.txt_in(txt)
+
+        vec_orig = vec
+        if getattr(self.params, 'global_modulation', False):
+            vec = (self.double_stream_modulation_img(vec_orig), self.double_stream_modulation_txt(vec_orig))
 
         if "post_input" in patches:
             for p in patches["post_input"]:
@@ -116,7 +127,10 @@ class GMFlux(Flux):
             pe = None
 
         blocks_replace = patches_replace.get("dit", {})
+        transformer_options["total_blocks"] = len(self.double_blocks)
+        transformer_options["block_type"] = "double"
         for i, block in enumerate(self.double_blocks):
+            transformer_options["block_index"] = i
             if ("double_block", i) in blocks_replace:
                 def block_wrap(args):
                     out = {}
@@ -157,7 +171,13 @@ class GMFlux(Flux):
 
         img = torch.cat((txt, img), 1)
 
+        if getattr(self.params, 'global_modulation', False):
+            vec, _ = self.single_stream_modulation(vec_orig)
+
+        transformer_options["total_blocks"] = len(self.single_blocks)
+        transformer_options["block_type"] = "single"
         for i, block in enumerate(self.single_blocks):
+            transformer_options["block_index"] = i
             if ("single_block", i) in blocks_replace:
                 def block_wrap(args):
                     out = {}
@@ -187,8 +207,8 @@ class GMFlux(Flux):
 
         img = img[:, txt.shape[1]:, ...]
 
-        hidden_states = self.final_layer(img, vec)  # (N, T, patch_size ** 2 * out_channels)
-        return hidden_states, vec
+        hidden_states = self.final_layer(img, vec_orig)  # (N, T, patch_size ** 2 * out_channels)
+        return hidden_states, vec_orig
 
     def _forward(self, x, timestep, context, y=None, guidance=None, ref_latents=None, control=None,
                  transformer_options={}, **kwargs):
@@ -197,16 +217,22 @@ class GMFlux(Flux):
 
         h_len = ((h_orig + (patch_size // 2)) // patch_size)
         w_len = ((w_orig + (patch_size // 2)) // patch_size)
-        img, img_ids = self.process_img(x)
+        if 'transformer_options' in inspect.signature(self.process_img).parameters:
+            img, img_ids = self.process_img(x, transformer_options=transformer_options)
+        else:  # fallback for older versions
+            img, img_ids = self.process_img(x)
         img_tokens = img.shape[1]
         if ref_latents is not None:
             h = 0
             w = 0
             index = 0
-            ref_latents_method = kwargs.get("ref_latents_method", "offset")
+            ref_latents_method = kwargs.get(
+                "ref_latents_method",
+                getattr(self.params, 'default_ref_method', 'offset')
+            )
             for ref in ref_latents:
                 if ref_latents_method == "index":
-                    index += 1
+                    index += getattr(self.params, 'ref_index_scale', 1)
                     h_offset = 0
                     w_offset = 0
                 elif ref_latents_method == "uxo":
@@ -230,7 +256,12 @@ class GMFlux(Flux):
                 img = torch.cat([img, kontext], dim=1)
                 img_ids = torch.cat([img_ids, kontext_ids], dim=1)
 
-        txt_ids = torch.zeros((bs, context.shape[1], 3), device=x.device, dtype=x.dtype)
+        txt_ids = torch.zeros((bs, context.shape[1], len(self.params.axes_dim)), device=x.device, dtype=torch.float32)
+
+        if len(self.params.axes_dim) == 4:  # Flux 2
+            txt_ids[:, :, 3] = torch.linspace(
+                0, context.shape[1] - 1, steps=context.shape[1], device=x.device, dtype=torch.float32)
+
         hidden_states, vec = self.forward_orig(
             img, img_ids, context, txt_ids, timestep, y, guidance, control,
             transformer_options, attn_mask=kwargs.get("attention_mask", None))

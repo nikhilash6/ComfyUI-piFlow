@@ -19,6 +19,7 @@ class ModelSamplingPiFlow:
     def patch(self, model, shift):
         m = model.clone()
         multiplier = model.model.model_config.sampling_settings.get("multiplier", 1.0)
+        patch_size = model.model.model_config.sampling_settings.get("patch_size", None)
 
         sampling_base = _ModelSamplingPiFlow
         sampling_type = comfy.model_sampling.CONST
@@ -27,6 +28,6 @@ class ModelSamplingPiFlow:
             pass
 
         model_sampling = ModelSamplingAdvanced(model.model.model_config)
-        model_sampling.set_parameters(shift=shift, multiplier=multiplier)
+        model_sampling.set_parameters(shift=shift, multiplier=multiplier, patch_size=patch_size)
         m.add_object_patch("model_sampling", model_sampling)
         return (m,)

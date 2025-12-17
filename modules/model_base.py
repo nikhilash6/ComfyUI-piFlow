@@ -2,7 +2,13 @@ import torch
 import comfy
 from functools import partial
 from enum import Enum
-from comfy.model_base import BaseModel, convert_tensor, QwenImage as _QwenImage, Flux as _Flux
+from comfy.model_base import (
+    BaseModel,
+    convert_tensor,
+    QwenImage as _QwenImage,
+    Flux as _Flux,
+    Flux2 as _Flux2
+)
 from .piflow_policies import POLICY_CLASSES
 from . import architectures
 
@@ -21,11 +27,14 @@ class ModelSamplingPiFlow(torch.nn.Module):
 
         self.set_parameters(
             shift=sampling_settings.get("shift", 3.2),
-            multiplier=sampling_settings.get("multiplier", 1.0))
+            multiplier=sampling_settings.get("multiplier", 1.0),
+            patch_size=sampling_settings.get("patch_size", None)
+        )
 
-    def set_parameters(self, shift=3.2, multiplier=1.0):
+    def set_parameters(self, shift=3.2, multiplier=1.0, patch_size=None):
         self.shift = shift
         self.multiplier = multiplier
+        self.patch_size = patch_size
 
     def timestep(self, sigma):
         return sigma * self.multiplier
@@ -37,6 +46,54 @@ class ModelSamplingPiFlow(torch.nn.Module):
     def unwarp_t(self, t):
         shift = self.shift
         return t / (shift + (1 - shift) * t)
+
+    def unpatchify(self, x):
+        if self.patch_size is None:
+            return x
+        elif len(self.patch_size) == 2:
+            assert x.dim() == 4, "Expected 4D tensor for 2D patchify"
+            b, c, h, w = x.shape
+            ph, pw = self.patch_size
+            x = x.reshape(
+                b, c // (ph * pw), ph, pw, h, w
+            ).permute(0, 1, 4, 2, 5, 3).reshape(
+                b, c // (ph * pw), h * ph, w * pw)
+            return x
+        elif len(self.patch_size) == 3:
+            assert x.dim() == 5, "Expected 5D tensor for 3D patchify"
+            b, c, t, h, w = x.shape
+            pt, ph, pw = self.patch_size
+            x = x.reshape(
+                b, c // (pt * ph * pw), pt, ph, pw, t, h, w
+            ).permute(0, 1, 5, 2, 6, 3, 7, 4).reshape(
+                b, c // (pt * ph * pw), t * pt, h * ph, w * pw)
+            return x
+        else:
+            raise ValueError("Unsupported patch size length")
+
+    def patchify(self, x):
+        if self.patch_size is None:
+            return x
+        elif len(self.patch_size) == 2:
+            assert x.dim() == 4, "Expected 4D tensor for 2D patchify"
+            b, c, h, w = x.shape
+            ph, pw = self.patch_size
+            x = x.reshape(
+                b, c, h // ph, ph, w // pw, pw
+            ).permute(0, 1, 3, 5, 2, 4).reshape(
+                b, c * ph * pw, h // ph, w // pw)
+            return x
+        elif len(self.patch_size) == 3:
+            assert x.dim() == 5, "Expected 5D tensor for 3D patchify"
+            b, c, t, h, w = x.shape
+            pt, ph, pw = self.patch_size
+            x = x.reshape(
+                b, c, t // pt, pt, h // ph, ph, w // pw, pw
+            ).permute(0, 1, 3, 5, 7, 2, 4, 6).reshape(
+                b, c * pt * ph * pw, t // pt, h // ph, w // pw)
+            return x
+        else:
+            raise ValueError("Unsupported patch size length")
 
     def percent_to_sigma(self, percent):
         if percent <= 0.0:
@@ -144,6 +201,18 @@ class GMFlux(_Flux, BasePiFlow):
 
 
 class Flux(_Flux, BasePiFlow):
+    def __init__(self, model_config, device=None):
+        BasePiFlow.__init__(self, model_config, architectures.FluxMod, device=device)
+        self.memory_usage_factor_conds = ("ref_latents",)
+
+
+class GMFlux2(_Flux2, BasePiFlow):
+    def __init__(self, model_config, device=None):
+        BasePiFlow.__init__(self, model_config, architectures.GMFlux, device=device)
+        self.memory_usage_factor_conds = ("ref_latents",)
+
+
+class Flux2(_Flux2, BasePiFlow):
     def __init__(self, model_config, device=None):
         BasePiFlow.__init__(self, model_config, architectures.FluxMod, device=device)
         self.memory_usage_factor_conds = ("ref_latents",)
