@@ -123,6 +123,12 @@ Use gmflux_k8_piid_4step.safetensors for 4-step sampling and gmflux_k8_piid_8ste
 
 The adapters **only work with `guidance` set to 3.5**. Do NOT modify this value, otherwise the results will be very noisy.
 
+## GGUF Loaders
+
+To load GGUF models, please install the custom nodes in [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) first. 
+
+Then, replace the `Load pi-Flow Model` node in the workflows with the `Load pi-Flow Model (GGUF)` node and select the corresponding GGUF model file.
+
 ## Training Your Own pi-Flow Models
 
 Please visit the official [piFlow](https://github.com/lakonik/piflow) repo for more information on training.

@@ -1,3 +1,8 @@
+import os
+import sys
+import importlib
+import importlib.util
+import importlib.machinery
 import logging
 import torch
 import comfy
@@ -9,6 +14,53 @@ try:
     from comfy.utils import convert_old_quants
 except ImportError:
     convert_old_quants = None
+
+
+def import_comfyui_gguf_nodes():
+    """
+    Import custom_nodes/ComfyUI-GGUF/nodes.py as a proper package module so that
+    relative imports inside it (e.g. from .ops import ...) work.
+
+    Returns the imported nodes module, or None if ComfyUI-GGUF is not present.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    custom_nodes_dir = os.path.abspath(os.path.join(here, ".."))  # .../custom_nodes
+    gguf_dir = os.path.join(custom_nodes_dir, "ComfyUI-GGUF")
+    nodes_py = os.path.join(gguf_dir, "nodes.py")
+
+    if not os.path.isfile(nodes_py):
+        return None
+
+    pkg_name = "comfyui_gguf"  # safe alias (valid identifier)
+    mod_name = f"{pkg_name}.nodes"  # import as a submodule of that package
+
+    # 1) Ensure the parent package exists (with a __path__)
+    if pkg_name not in sys.modules:
+        pkg = importlib.util.module_from_spec(
+            importlib.machinery.ModuleSpec(pkg_name, loader=None, is_package=True)
+        )
+        pkg.__path__ = [gguf_dir]  # where to find ops.py, nodes.py, etc.
+        sys.modules[pkg_name] = pkg
+
+    # 2) Import nodes as pkg submodule (so __package__ is set correctly)
+    if mod_name in sys.modules:
+        return sys.modules[mod_name]
+
+    spec = importlib.util.spec_from_file_location(mod_name, nodes_py)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = mod
+    assert spec and spec.loader
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_nodes = import_comfyui_gguf_nodes()
+if _nodes is None:
+    GGUFModelPatcher = gguf_sd_loader = GGMLOps = None
+else:
+    GGUFModelPatcher = _nodes.GGUFModelPatcher
+    gguf_sd_loader = _nodes.gguf_sd_loader
+    GGMLOps = _nodes.GGMLOps
 
 
 def convert_diffusers_to_comfyui(state_dict, diffusers_weight, comfy_weight_map):
@@ -33,7 +85,8 @@ def convert_diffusers_to_comfyui(state_dict, diffusers_weight, comfy_weight_map)
             if updated_weight.shape[offset[0]] < offset[1] + offset[2]:
                 expanded_shape = list(diffusers_weight.shape)
                 expanded_shape[offset[0]] = offset[1] + offset[2]
-                expanded_weight = torch.empty(expanded_shape, device=diffusers_weight.device, dtype=diffusers_weight.dtype)
+                expanded_weight = torch.empty(
+                    expanded_shape, device=diffusers_weight.device, dtype=diffusers_weight.dtype)
                 _updated_weight = expanded_weight.narrow(offset[0], 0, updated_weight.shape[offset[0]])
                 _updated_weight[:] = updated_weight
                 updated_weight = expanded_weight
@@ -47,7 +100,7 @@ def convert_diffusers_to_comfyui(state_dict, diffusers_weight, comfy_weight_map)
 
 def load_piflow_model_state_dict(
         base_model_sd, adapter_sd=None, model_options={},
-        base_metadata=None, adapter_metadata=None, adapter_strength=1.0):
+        base_metadata=None, adapter_metadata=None):
     if base_metadata is None:
         base_metadata = {}
     if adapter_metadata is None:
@@ -63,7 +116,7 @@ def load_piflow_model_state_dict(
         base_model_sd = convert_diffusers_mmdit(base_model_sd, "")
         base_unet_config = detect_unet_config(base_model_sd, "", metadata=base_metadata)
         if base_unet_config is None:
-            return None
+            return None, None
 
     weight_dtype = comfy.utils.weight_dtype(base_model_sd)
 
@@ -115,13 +168,18 @@ def load_piflow_model_state_dict(
 
     model_config = model_config_from_piflow(new_sd, "", metadata=metadata)
     if model_config is None:
-        return None
+        return None, None
 
     offload_device = model_management.unet_offload_device()
     unet_weight_dtype = list(model_config.supported_inference_dtypes)
-    if (getattr(model_config, 'scaled_fp8', None) is not None
-            or getattr(model_config, 'quant_config', None) is not None):
-        weight_dtype = None
+    if hasattr(model_config, 'quant_config'):
+        has_quant_config = model_config.quant_config is not None
+        if has_quant_config:
+            weight_dtype = None
+    else:
+        has_quant_config = getattr(model_config, 'layer_quant_config', None) is not None
+        if getattr(model_config, 'scaled_fp8', None) is not None:
+            weight_dtype = None
 
     dtype = model_options.get("dtype", None)
 
@@ -133,11 +191,7 @@ def load_piflow_model_state_dict(
 
     load_device = model_management.get_torch_device()
 
-    if hasattr(model_config, 'quant_config'):
-        has_quant = model_config.quant_config is not None
-    else:
-        has_quant = getattr(model_config, 'layer_quant_config', None) is not None
-    if has_quant:
+    if has_quant_config:
         manual_cast_dtype = model_management.unet_manual_cast(
             None, load_device, model_config.supported_inference_dtypes)
     else:
@@ -156,10 +210,7 @@ def load_piflow_model_state_dict(
         logging.info("left over keys in diffusion model: {}".format(left_over))
     model = comfy.model_patcher.ModelPatcher(model, load_device=load_device, offload_device=offload_device)
 
-    if len(lora_sd) > 0:
-        model, _ = comfy.sd.load_lora_for_models(model, None, lora_sd, adapter_strength, None)
-
-    return model
+    return model, lora_sd
 
 
 def load_piflow_model(base_model_path, adapter_path, model_options={}, adapter_strength=1.0):
@@ -167,12 +218,60 @@ def load_piflow_model(base_model_path, adapter_path, model_options={}, adapter_s
     adapter_sd = adapter_metadata = None
     if adapter_path is not None:
         adapter_sd, adapter_metadata = comfy.utils.load_torch_file(adapter_path, return_metadata=True)
-    model = load_piflow_model_state_dict(
+    model, lora_sd = load_piflow_model_state_dict(
         base_model_sd, adapter_sd=adapter_sd, model_options=model_options,
-        base_metadata=base_metadata, adapter_metadata=adapter_metadata, adapter_strength=adapter_strength)
+        base_metadata=base_metadata, adapter_metadata=adapter_metadata)
     if model is None:
         logging.error("ERROR UNSUPPORTED PIFLOW MODEL")
         raise RuntimeError("ERROR: Could not detect model type of: {}\n".format(base_model_path))
+    if len(lora_sd) > 0:
+        model, _ = comfy.sd.load_lora_for_models(model, None, lora_sd, adapter_strength, None)
+    return model
+
+
+def load_piflow_model_gguf(
+        base_model_path, adapter_path, model_options={}, adapter_strength=1.0,
+        dequant_dtype=None, patch_dtype=None, patch_on_device=None):
+    if GGUFModelPatcher is None:
+        raise RuntimeError(
+            "ComfyUI-GGUF not found. Please install the ComfyUI-GGUF custom nodes to enable GGUF loading.")
+
+    ops = GGMLOps()
+
+    if dequant_dtype in ("default", None):
+        ops.Linear.dequant_dtype = None
+    elif dequant_dtype in ["target"]:
+        ops.Linear.dequant_dtype = dequant_dtype
+    else:
+        ops.Linear.dequant_dtype = getattr(torch, dequant_dtype)
+
+    if patch_dtype in ("default", None):
+        ops.Linear.patch_dtype = None
+    elif patch_dtype in ["target"]:
+        ops.Linear.patch_dtype = patch_dtype
+    else:
+        ops.Linear.patch_dtype = getattr(torch, patch_dtype)
+
+    # Todo: load metadata (policy_config) from GGUF?
+    base_model_sd = gguf_sd_loader(base_model_path)
+    model_options.update(custom_operations=ops)
+
+    adapter_sd = adapter_metadata = None
+    if adapter_path is not None:
+        adapter_sd, adapter_metadata = comfy.utils.load_torch_file(adapter_path, return_metadata=True)
+    model, lora_sd = load_piflow_model_state_dict(
+        base_model_sd, adapter_sd=adapter_sd, model_options=model_options,
+        adapter_metadata=adapter_metadata)
+    if model is None:
+        logging.error("ERROR UNSUPPORTED PIFLOW MODEL")
+        raise RuntimeError("ERROR: Could not detect model type of: {}\n".format(base_model_path))
+
+    model = GGUFModelPatcher.clone(model)
+    model.patch_on_device = patch_on_device
+
+    if len(lora_sd) > 0:
+        model, _ = comfy.sd.load_lora_for_models(model, None, lora_sd, adapter_strength, None)
+
     return model
 
 
@@ -212,7 +311,46 @@ class PiFlowLoader:
         else:
             adapter_path = None
         model = load_piflow_model(
-            base_model_path, adapter_path, 
+            base_model_path, adapter_path,
             model_options=model_options, adapter_strength=adapter_strength)
 
-        return (model, )
+        return (model,)
+
+
+class PiFlowLoaderGGUF:
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model_name": (folder_paths.get_filename_list("unet_gguf"),),
+            },
+            "optional": {
+                "dequant_dtype": (["default", "target", "float32", "float16", "bfloat16"], {"default": "default"}),
+                "patch_dtype": (["default", "target", "float32", "float16", "bfloat16"], {"default": "default"}),
+                "patch_on_device": ("BOOLEAN", {"default": False}),
+                "adapter_name": (folder_paths.get_filename_list("loras"), {"default": None}),
+                "adapter_strength": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step": 0.01}),
+            }
+        }
+
+    RETURN_TYPES = ("MODEL",)
+    FUNCTION = "load_piflow_gguf"
+
+    CATEGORY = "piflow"
+
+    def load_piflow_gguf(
+            self, model_name, dequant_dtype=None, patch_dtype=None, patch_on_device=None,
+            adapter_name=None, adapter_strength=1.0):
+
+        base_model_path = folder_paths.get_full_path_or_raise("unet", model_name)
+        if adapter_name is not None:
+            adapter_path = folder_paths.get_full_path_or_raise("loras", adapter_name)
+        else:
+            adapter_path = None
+
+        model = load_piflow_model_gguf(
+            base_model_path, adapter_path, adapter_strength=adapter_strength,
+            dequant_dtype=dequant_dtype, patch_dtype=patch_dtype, patch_on_device=patch_on_device)
+
+        return (model,)
