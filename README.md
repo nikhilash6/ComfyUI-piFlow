@@ -169,6 +169,11 @@ This code repository is licensed under the Apache-2.0 License. Models used in th
 
 ## Changelog
 
+- **v1.1.0** (2025-12-18)
+  - Add pi-Flux.2 models and workflow for text-to-image generation and multi-image editing.
+  - Add GGUF support for pi-Flow models.
+  - Minor bug fixes and improvements.
+
 - **v1.0.6** (2025-12-16)
   - Fix compatibility for ComfyUI v0.4.0 (new quantization)
   - Improve GMFlow numerical stability
