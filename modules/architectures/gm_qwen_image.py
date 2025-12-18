@@ -153,7 +153,7 @@ class GMQwenImageTransformer2DModel(QwenImageTransformer2DModel):
                     if add is not None:
                         hidden_states[:, :add.shape[1]] += add
 
-        hidden_states = self.norm_out(hidden_states, temb)[:, :num_embeds].float()
+        hidden_states = self.norm_out(hidden_states, temb)[:, :num_embeds].to(self.proj_out_means.weight.dtype)
 
         bs = hidden_states.size(0)
         k = self.num_gaussians
@@ -174,7 +174,8 @@ class GMQwenImageTransformer2DModel(QwenImageTransformer2DModel):
                 bs, k, 1, 1, h * self.patch_size, w * self.patch_size
             )[..., :x.shape[-2], :x.shape[-1]].log_softmax(dim=1)
         if self.constant_logstd is None:
-            out_logstds = self.proj_out_logstds(temb.detach().float()).reshape(bs, 1, 1, 1, 1, 1)
+            out_logstds = self.proj_out_logstds(
+                temb.detach().to(self.proj_out_logstds[-1].weight.dtype)).reshape(bs, 1, 1, 1, 1, 1)
         else:
             out_logstds = hidden_states.new_full((bs, 1, 1, 1, 1, 1), float(self.constant_logstd))
 

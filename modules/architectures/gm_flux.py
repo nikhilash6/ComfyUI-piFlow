@@ -265,7 +265,7 @@ class GMFlux(Flux):
         hidden_states, vec = self.forward_orig(
             img, img_ids, context, txt_ids, timestep, y, guidance, control,
             transformer_options, attn_mask=kwargs.get("attention_mask", None))
-        hidden_states = hidden_states[:, :img_tokens].float()
+        hidden_states = hidden_states[:, :img_tokens].to(self.proj_out_means.weight.dtype)
 
         bs = hidden_states.size(0)
         k = self.num_gaussians
@@ -285,7 +285,8 @@ class GMFlux(Flux):
             bs, k, 1, h_len * patch_size, w_len * patch_size
         )[..., :x.shape[-2], :x.shape[-1]].log_softmax(dim=1)
         if self.constant_logstd is None:
-            out_logstds = self.proj_out_logstds(vec.detach().float()).reshape(bs, 1, 1, 1, 1)
+            out_logstds = self.proj_out_logstds(
+                vec.detach().to(self.proj_out_logstds[-1].weight.dtype)).reshape(bs, 1, 1, 1, 1)
         else:
             out_logstds = hidden_states.new_full((bs, 1, 1, 1, 1), float(self.constant_logstd))
 
