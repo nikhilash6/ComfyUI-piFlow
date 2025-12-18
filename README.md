@@ -169,20 +169,11 @@ This code repository is licensed under the Apache-2.0 License. Models used in th
 
 ## Changelog
 
-- **v1.1.2** (2025-12-18)
-  - Fix a bug when a conditioning is reused multiple times in a pi-Flux.2 workflow
-
-- **v1.1.1** (2025-12-18)
-  - Fix dtype mismatch issues in GMFlow output layers
-  - Fix pi-Flux.2 latent preview
-
-- **v1.1.0** (2025-12-18)
+- **v1.1.3** (2025-12-18)
   - Add pi-Flux.2 models and workflow for text-to-image generation and multi-image editing.
   - Add GGUF support for pi-Flow models.
-  - Minor bug fixes and improvements.
-
-- **v1.0.6** (2025-12-16)
   - Fix compatibility for ComfyUI v0.4.0 (new quantization)
+  - Fix dtype mismatch issues in GMFlow output layers
   - Improve GMFlow numerical stability
 
 - **v1.0.5** (2025-11-11)
