@@ -31,7 +31,7 @@ git clone https://github.com/Lakonik/ComfyUI-piFlow
 
 ## Workflows
 
-This repo provides text-to-image [workflows](workflows) based on Qwen-Image and FLUX.1 dev. 
+This repo provides image generation [workflows](workflows) based on Qwen-Image, FLUX.1 dev, and FLUX.2 dev. 
 
 ### pi-Qwen-Image
 
@@ -64,10 +64,6 @@ VAE
 
 - Download [qwen_image_vae.safetensors](https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/vae/qwen_image_vae.safetensors) and save it to
 <br>`models/vae/qwen_image_vae.safetensors`
-
-#### Adapter strength
-
-Increasing `adapter_strength` in the loader node can reduce noise and enhance text rendering. This may be helpful especially when using a customized base model or additional LoRAs.
 
 #### Sampler steps
 
@@ -111,10 +107,6 @@ VAE
 - Download [ae.safetensors](https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/ae.safetensors) and save it to
 <br>`models/vae/ae.safetensors`
 
-#### Adapter strength
-
-Increasing `adapter_strength` in the loader node can amplify contrast, reduce noise, and enhance text rendering.
-
 #### Sampler steps
 
 Use gmflux_k8_piid_4step.safetensors for 4-step sampling and gmflux_k8_piid_8step.safetensors for 8-step sampling. Using other settings may result in amplified or reduced contrast, which could be re-calibrated by adjusting the `adapter_strength`.
@@ -122,6 +114,44 @@ Use gmflux_k8_piid_4step.safetensors for 4-step sampling and gmflux_k8_piid_8ste
 #### Guidance 
 
 The adapters **only work with `guidance` set to 3.5**. Do NOT modify this value, otherwise the results will be very noisy.
+
+### pi-Flux.2
+
+Supports the FLUX.2 dev base model (and possibly some of its customized versions), which enables both text-to-image generation and multi-image editing tasks.
+
+Please download the image below and drag it into ComfyUI to load the pi-Flux.2 workflow.  
+
+<img src="workflows/pi-Flux2.png" width="600" alt=""/>
+
+#### Model links
+
+Base model
+
+- Download [flux2_dev_fp8mixed.safetensors](https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/diffusion_models/flux2_dev_fp8mixed.safetensors) and save it to
+<br>`models/diffusion_models/flux2_dev_fp8mixed.safetensors`
+
+pi-Flow adapter
+
+- Download [gmflux2_k8_piid_4step/diffusion_pytorch_model.safetensors](https://huggingface.co/Lakonik/pi-FLUX.2/resolve/main/gmflux2_k8_piid_4step/diffusion_pytorch_model.safetensors) and save it to 
+<br>`models/loras/gmflux2_k8_piid_4step.safetensors`
+
+Text encoder
+
+- Download [mistral_3_small_flux2_fp8.safetensors](https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/text_encoders/mistral_3_small_flux2_fp8.safetensors) and save it to
+<br>`models/text_encoders/mistral_3_small_flux2_fp8.safetensors`
+
+VAE
+
+- Download [flux2-vae.safetensors](https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/vae/flux2-vae.safetensors) and save it to
+<br>`models/vae/flux2-vae.safetensors`
+
+#### Sampler steps
+
+The 4-step adapter works well for any number of sampling steps greater than or equal to 4.
+
+#### Guidance 
+
+The adapters **only work with `guidance` set to 4.0**. Do NOT modify this value.
 
 ## GGUF Support
 
