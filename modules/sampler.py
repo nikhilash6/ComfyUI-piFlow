@@ -1,4 +1,5 @@
 import collections
+import copy
 import numpy as np
 import torch
 import comfy
@@ -12,6 +13,26 @@ from tqdm.auto import trange
 from .model_base import BasePiFlow
 from .piflow_policies import GMFlowPolicy
 from .piflow_policies.base import BasePolicy
+
+
+def deepcopy_no_tensors(x):
+    memo = {}
+
+    # Pre-register all tensors we can reach so deepcopy will reuse them.
+    def register_tensors(obj):
+        if torch.is_tensor(obj):
+            memo[id(obj)] = obj
+            return
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                register_tensors(k)
+                register_tensors(v)
+        elif isinstance(obj, (list, tuple, set, frozenset)):
+            for v in obj:
+                register_tensors(v)
+
+    register_tensors(x)
+    return copy.deepcopy(x, memo)
 
 
 def calc_cond_batch(model: BasePiFlow, conds: list[list[dict]], x_in: torch.Tensor, timestep, model_options: dict[str]):
@@ -310,6 +331,7 @@ class PiFlowSampler:
         policy_sampler = _PolicySampler(self.model)
 
         model_sampling = self.model.get_model_object("model_sampling")
+        conditioning = deepcopy_no_tensors(conditioning)
         for conditioning_single in conditioning:
             conditioning_dict = conditioning_single[1]
             if 'reference_latents' in conditioning_dict:
