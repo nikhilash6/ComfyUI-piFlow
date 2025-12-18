@@ -267,7 +267,11 @@ class _PiFlowSampler(Sampler):
             if callback is not None:
                 u = (x_t_src - x_t_to) / (sigma_t_src - sigma_t_to).clamp(min=1e-6)
                 x_t_0 = x_t_to - u * sigma_t_to
-                callback(step_id, x_t_0, x_t_src, nfe)
+                callback(  # for preview
+                    step_id,
+                    self.model_sampling.patchify(x_t_0),
+                    self.model_sampling.patchify(x_t_src),
+                    nfe)
 
             x_t_src = x_t_to
 
