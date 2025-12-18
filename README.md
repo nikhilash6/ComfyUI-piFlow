@@ -169,6 +169,9 @@ This code repository is licensed under the Apache-2.0 License. Models used in th
 
 ## Changelog
 
+- **v1.1.4** (2025-12-18)
+  - Fix a bug in the example pi-Flux.2 editing workflow where a load image node is disconnected from the main graph. 
+
 - **v1.1.3** (2025-12-18)
   - Add pi-Flux.2 models and workflow for text-to-image generation and multi-image editing.
   - Add GGUF support for pi-Flow models.
