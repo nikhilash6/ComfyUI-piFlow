@@ -151,7 +151,7 @@ The 4-step adapter works well for any number of sampling steps greater than or e
 
 #### Guidance 
 
-The adapters **only work with `guidance` set to 4.0**. Do NOT modify this value.
+The adapter **only works with `guidance` set to 4.0**. Do NOT modify this value.
 
 ## GGUF Support
 
@@ -168,6 +168,9 @@ Please visit the official [piFlow](https://github.com/lakonik/piflow) repo for m
 This code repository is licensed under the Apache-2.0 License. Models used in the workflows are subject to their own respective licenses.
 
 ## Changelog
+
+- **v1.1.2** (2025-12-18)
+  - Fix a bug when a conditioning is reused multiple times in a pi-Flux.2 workflow
 
 - **v1.1.1** (2025-12-18)
   - Fix dtype mismatch issues in GMFlow output layers
@@ -190,4 +193,4 @@ This code repository is licensed under the Apache-2.0 License. Models used in th
   - Fix a bug in GM-Qwen when running in BF16 precision.
 
 - **v1.0.3** (2025-11-09)
-  - Added support for scaled FP8 base models.
+  - Add support for scaled FP8 base models.
