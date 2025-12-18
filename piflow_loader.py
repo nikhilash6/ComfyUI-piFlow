@@ -21,7 +21,7 @@ old_flux_to_diffusers = comfy.utils.flux_to_diffusers
 
 
 def flux_to_diffusers(mmdit_config, output_prefix=""):
-    if mmdit_config['image_model'] == 'flux':
+    if mmdit_config['image_model'] in ('flux', 'gm_flux'):
         return old_flux_to_diffusers(mmdit_config, output_prefix=output_prefix)
 
     n_double_layers = mmdit_config.get("depth", 0)
