@@ -169,6 +169,10 @@ This code repository is licensed under the Apache-2.0 License. Models used in th
 
 ## Changelog
 
+- **v1.1.1** (2025-12-18)
+  - Fix dtype mismatch issues in GMFlow output layers
+  - Fix pi-Flux.2 latent preview
+
 - **v1.1.0** (2025-12-18)
   - Add pi-Flux.2 models and workflow for text-to-image generation and multi-image editing.
   - Add GGUF support for pi-Flow models.
