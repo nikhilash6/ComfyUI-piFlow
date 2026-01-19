@@ -357,8 +357,13 @@ def load_piflow_model_gguf(
     else:
         ops.Linear.patch_dtype = getattr(torch, patch_dtype)
 
-    # Todo: load metadata (policy_config) from GGUF?
-    base_model_sd = gguf_sd_loader(base_model_path)
+    loaded_gguf_data = gguf_sd_loader(base_model_path)
+    if isinstance(loaded_gguf_data, tuple):  # newer version after commit 58625e1 (https://github.com/city96/ComfyUI-GGUF/commit/58625e1cb63a8b8dd1bf4e0221de032b5135d0d2)
+        base_model_sd, extra = loaded_gguf_data
+        base_metadata = extra.get("metadata", None)
+    else:  # older version
+        base_model_sd = loaded_gguf_data
+        base_metadata = None
     model_options.update(custom_operations=ops)
 
     adapter_sd = adapter_metadata = None
@@ -366,7 +371,7 @@ def load_piflow_model_gguf(
         adapter_sd, adapter_metadata = comfy.utils.load_torch_file(adapter_path, return_metadata=True)
     model, lora_sd = load_piflow_model_state_dict(
         base_model_sd, adapter_sd=adapter_sd, model_options=model_options,
-        adapter_metadata=adapter_metadata)
+        base_metadata=base_metadata, adapter_metadata=adapter_metadata)
     if model is None:
         logging.error("ERROR UNSUPPORTED PIFLOW MODEL")
         raise RuntimeError("ERROR: Could not detect model type of: {}\n".format(base_model_path))
