@@ -169,6 +169,10 @@ This code repository is licensed under the Apache-2.0 License. Models used in th
 
 ## Changelog
 
+- **v1.1.5** (2026-01-18)
+  - Fix a compatibility issue with ComfyUI-GGUF commit `58625e1`.
+  - Add support for loading metadata from GGUF pi-Flow models.
+
 - **v1.1.4** (2025-12-18)
   - Fix a bug in the example pi-Flux.2 editing workflow where a load image node is disconnected from the main graph. 
 
