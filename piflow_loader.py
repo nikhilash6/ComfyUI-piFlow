@@ -427,40 +427,44 @@ class PiFlowLoader:
         return (model,)
 
 
-class PiFlowLoaderGGUF:
+if _nodes is not None:
+    class PiFlowLoaderGGUF:
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "model_name": (folder_paths.get_filename_list("unet_gguf"),),
-            },
-            "optional": {
-                "dequant_dtype": (["default", "target", "float32", "float16", "bfloat16"], {"default": "default"}),
-                "patch_dtype": (["default", "target", "float32", "float16", "bfloat16"], {"default": "default"}),
-                "patch_on_device": ("BOOLEAN", {"default": False}),
-                "adapter_name": (folder_paths.get_filename_list("loras"), {"default": None}),
-                "adapter_strength": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step": 0.01}),
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {
+                "required": {
+                    "model_name": (folder_paths.get_filename_list("unet_gguf"),),
+                },
+                "optional": {
+                    "dequant_dtype": (["default", "target", "float32", "float16", "bfloat16"], {"default": "default"}),
+                    "patch_dtype": (["default", "target", "float32", "float16", "bfloat16"], {"default": "default"}),
+                    "patch_on_device": ("BOOLEAN", {"default": False}),
+                    "adapter_name": (folder_paths.get_filename_list("loras"), {"default": None}),
+                    "adapter_strength": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step": 0.01}),
+                }
             }
-        }
 
-    RETURN_TYPES = ("MODEL",)
-    FUNCTION = "load_piflow_gguf"
+        RETURN_TYPES = ("MODEL",)
+        FUNCTION = "load_piflow_gguf"
 
-    CATEGORY = "piflow"
+        CATEGORY = "piflow"
 
-    def load_piflow_gguf(
-            self, model_name, dequant_dtype=None, patch_dtype=None, patch_on_device=None,
-            adapter_name=None, adapter_strength=1.0):
+        def load_piflow_gguf(
+                self, model_name, dequant_dtype=None, patch_dtype=None, patch_on_device=None,
+                adapter_name=None, adapter_strength=1.0):
 
-        base_model_path = folder_paths.get_full_path_or_raise("unet", model_name)
-        if adapter_name is not None:
-            adapter_path = folder_paths.get_full_path_or_raise("loras", adapter_name)
-        else:
-            adapter_path = None
+            base_model_path = folder_paths.get_full_path_or_raise("unet", model_name)
+            if adapter_name is not None:
+                adapter_path = folder_paths.get_full_path_or_raise("loras", adapter_name)
+            else:
+                adapter_path = None
 
-        model = load_piflow_model_gguf(
-            base_model_path, adapter_path, adapter_strength=adapter_strength,
-            dequant_dtype=dequant_dtype, patch_dtype=patch_dtype, patch_on_device=patch_on_device)
+            model = load_piflow_model_gguf(
+                base_model_path, adapter_path, adapter_strength=adapter_strength,
+                dequant_dtype=dequant_dtype, patch_dtype=patch_dtype, patch_on_device=patch_on_device)
 
-        return (model,)
+            return (model,)
+
+else:
+    PiFlowLoaderGGUF = None
