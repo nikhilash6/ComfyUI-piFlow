@@ -1,4 +1,3 @@
-import collections
 import copy
 import numpy as np
 import torch
@@ -7,11 +6,9 @@ import comfy.sampler_helpers
 import comfy.patcher_extension
 import comfy.model_patcher
 from typing import Optional
-from comfy.samplers import Sampler, CFGGuider, finalize_default_conds, can_concat_cond, get_area_and_mult, cond_cat
-from comfy import model_management
+from comfy.samplers import Sampler, CFGGuider, finalize_default_conds, get_area_and_mult, cond_cat
 from tqdm.auto import trange
 from .model_base import BasePiFlow
-from .piflow_policies import GMFlowPolicy
 from .piflow_policies.base import BasePolicy
 
 
@@ -50,8 +47,58 @@ def _calc_cond_batch_outer(model: BasePiFlow, conds: list[list[dict]], x_in: tor
     return executor.execute(model, conds, x_in, timestep, model_options)
 
 
+class CompositePolicy(BasePolicy):
+    def __init__(self, entries: list[tuple[BasePolicy, list[int] | None, torch.Tensor]]):
+        self.entries = entries
+
+    @staticmethod
+    def _narrow_area(tensor: torch.Tensor, area: list[int] | None):
+        if area is None:
+            return tensor
+
+        dims = len(area) // 2
+        for i in range(dims):
+            tensor_dim = i + 2
+            if tensor.ndim > tensor_dim and tensor.shape[tensor_dim] > 1:
+                tensor = tensor.narrow(tensor_dim, area[i + dims], area[i])
+        return tensor
+
+    def pi(self, x_t, sigma_t):
+        out = torch.zeros_like(x_t)
+        counts = torch.ones_like(x_t) * 1e-37
+
+        for policy, area, mult in self.entries:
+            if area is None:
+                out += policy.pi(x_t, sigma_t) * mult
+                counts += mult
+                continue
+
+            out_view = out
+            counts_view = counts
+            dims = len(area) // 2
+            for i in range(dims):
+                out_view = out_view.narrow(i + 2, area[i + dims], area[i])
+                counts_view = counts_view.narrow(i + 2, area[i + dims], area[i])
+
+            x_view = self._narrow_area(x_t, area)
+            sigma_view = self._narrow_area(sigma_t, area)
+            out_view += policy.pi(x_view, sigma_view) * mult
+            counts_view += mult
+
+        return out / counts
+
+    def detach(self):
+        return CompositePolicy([(policy.detach(), area, mult) for policy, area, mult in self.entries])
+
+    def temperature_(self, temperature):
+        for policy, _, _ in self.entries:
+            if hasattr(policy, "temperature_"):
+                policy.temperature_(temperature)
+        return self
+
+
 def _calc_cond_batch(model: BasePiFlow, conds: list[list[dict]], x_in: torch.Tensor, timestep, model_options):
-    out_conds = []
+    out_conds = [[] for _ in conds]
     # separate conds by matching hooks
     hooked_to_run: dict[comfy.hooks.HookGroup, list[tuple[tuple, int]]] = {}
     default_conds = []
@@ -83,79 +130,50 @@ def _calc_cond_batch(model: BasePiFlow, conds: list[list[dict]], x_in: torch.Ten
     # run every hooked_to_run separately
     for hooks, to_run in hooked_to_run.items():
         while len(to_run) > 0:
-            first = to_run[0]
-            first_shape = first[0][0].shape
-            to_batch_temp = []
-            for x in range(len(to_run)):
-                if can_concat_cond(to_run[x][0], first[0]):
-                    to_batch_temp += [x]
-
-            to_batch_temp.reverse()
-            to_batch = to_batch_temp[:1]
-
-            free_memory = model_management.get_free_memory(x_in.device)
-            for i in range(1, len(to_batch_temp) + 1):
-                batch_amount = to_batch_temp[:len(to_batch_temp)//i]
-                input_shape = [len(batch_amount) * first_shape[0]] + list(first_shape)[1:]
-                cond_shapes = collections.defaultdict(list)
-                for tt in batch_amount:
-                    for k, v in to_run[tt][0].conditioning.items():
-                        cond_shapes[k].append(v.size())
-
-                if model.memory_required(input_shape, cond_shapes=cond_shapes) * 1.5 < free_memory:
-                    to_batch = batch_amount
-                    break
-
-            input_x = []
-            c = []
-            cond_or_uncond = []
-            uuids = []
-            control = None
-            patches = None
-            for x in to_batch:
-                o = to_run.pop(x)
-                p = o[0]
-                input_x.append(p.input_x)
-                c.append(p.conditioning)
-                cond_or_uncond.append(o[1])
-                uuids.append(p.uuid)
-                control = p.control
-                patches = p.patches
-
-            batch_chunks = len(cond_or_uncond)
-            input_x = torch.cat(input_x)
-            c = cond_cat(c)
-            timestep_ = torch.cat([timestep] * batch_chunks)
+            p, cond_index = to_run.pop()
+            input_x = p.input_x
+            c = cond_cat([p.conditioning])
+            timestep_ = timestep
 
             transformer_options = model.current_patcher.apply_hooks(hooks=hooks)
             if 'transformer_options' in model_options:
                 transformer_options = comfy.patcher_extension.merge_nested_dicts(
                     transformer_options, model_options['transformer_options'], copy_dict1=False)
 
-            if patches is not None:
+            if p.patches is not None:
                 transformer_options["patches"] = comfy.patcher_extension.merge_nested_dicts(
                     transformer_options.get("patches", {}),
-                    patches
+                    p.patches
                 )
 
-            transformer_options["cond_or_uncond"] = cond_or_uncond[:]
-            transformer_options["uuids"] = uuids[:]
+            transformer_options["cond_or_uncond"] = [cond_index]
+            transformer_options["uuids"] = [p.uuid]
             transformer_options["sigmas"] = timestep
 
             c['transformer_options'] = transformer_options
 
-            if control is not None:
-                c['control'] = control.get_control(input_x, timestep_, c, len(cond_or_uncond), transformer_options)
+            if p.control is not None:
+                c['control'] = p.control.get_control(input_x, timestep_, c, 1, transformer_options)
 
             if 'model_function_wrapper' in model_options:
-                output = model_options['model_function_wrapper'](model.apply_model, {"input": input_x, "timestep": timestep_, "c": c, "cond_or_uncond": cond_or_uncond})
+                output = model_options['model_function_wrapper'](model.apply_model, {"input": input_x, "timestep": timestep_, "c": c, "cond_or_uncond": [cond_index]})
             else:
                 output = model.apply_model(input_x, timestep_, **c)
 
-            out_conds.append(output)
+            out_conds[cond_index].append((output, p.area, p.mult))
 
-    assert len(out_conds) == 1
-    return out_conds[0]  # return a single policy
+    policies = []
+    for entries in out_conds:
+        if len(entries) == 0:
+            raise RuntimeError("No active pi-Flow conditioning was available for this sampling step.")
+        if len(entries) == 1 and entries[0][1] is None and not torch.any(entries[0][2] == 0).item():
+            policies.append(entries[0][0])
+        else:
+            policies.append(CompositePolicy(entries))
+
+    if len(policies) == 1:
+        return policies[0]
+    return policies
 
 
 def sampling_function(model, x, timestep, cond, model_options={}, seed=None):
@@ -272,7 +290,7 @@ class _PiFlowSampler(Sampler):
             m = m_vals[step_id]
 
             policy = model_wrap(x_t_src, t_src, **extra_args)
-            if isinstance(policy, GMFlowPolicy) and step_id != nfe - 1:
+            if hasattr(policy, "temperature_") and step_id != nfe - 1:
                 policy.temperature_(self.gm_temperature)
 
             x_t_dst = self.policy_rollout(

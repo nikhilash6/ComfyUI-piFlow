@@ -143,10 +143,7 @@ class BasePiFlow(BaseModel):
             xc = torch.cat([xc] + [comfy.model_management.cast_to_device(c_concat, xc.device, xc.dtype)], dim=1)
 
         context = c_crossattn
-        dtype = self.get_dtype()
-
-        if self.manual_cast_dtype is not None:
-            dtype = self.manual_cast_dtype
+        dtype = self.get_dtype_inference()
 
         xc = xc.to(dtype)
         device = xc.device
@@ -168,8 +165,13 @@ class BasePiFlow(BaseModel):
             extra_conds[o] = extra
 
         t = self.process_timestep(t, x=x, **extra_conds)
-        assert "latent_shapes" not in extra_conds, \
-            "`pack_latents` and `unpack_latents` are currently not supported in PiFlow models."
+        if "latent_shapes" in extra_conds:
+            raise RuntimeError("Packed/nested latents are not supported by pi-Flow models.")
+
+        transformer_options = transformer_options.copy()
+        transformer_options["prefetch_dynamic_vbars"] = (
+            self.current_patcher is not None and self.current_patcher.is_dynamic()
+        )
 
         model_output = self.diffusion_model(xc, t, context=context, control=control,
                                             transformer_options=transformer_options, **extra_conds)

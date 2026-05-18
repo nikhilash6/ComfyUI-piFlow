@@ -1,8 +1,7 @@
-import inspect
 import torch
 import torch.nn as nn
 from comfy.ldm.flux.layers import apply_mod, timestep_embedding
-from comfy.ldm.flux.model import Flux
+from comfy.ldm.flux.model import Flux, invert_slices
 
 
 class LastLayer(nn.Module):
@@ -86,9 +85,11 @@ class GMFlux(Flux):
             y,
             guidance=None,
             control=None,
+            timestep_zero_index=None,
             transformer_options={},
             attn_mask=None):
 
+        transformer_options = transformer_options.copy()
         patches = transformer_options.get("patches", {})
         patches_replace = transformer_options.get("patches_replace", {})
         if img.ndim != 3 or txt.ndim != 3:
@@ -106,15 +107,13 @@ class GMFlux(Flux):
                 y = torch.zeros((img.shape[0], self.params.vec_in_dim), device=img.device, dtype=img.dtype)
             vec = vec + self.vector_in(y[:, :self.params.vec_in_dim])
 
+        if self.txt_norm is not None:
+            txt = self.txt_norm(txt)
         txt = self.txt_in(txt)
-
-        vec_orig = vec
-        if getattr(self.params, 'global_modulation', False):
-            vec = (self.double_stream_modulation_img(vec_orig), self.double_stream_modulation_txt(vec_orig))
 
         if "post_input" in patches:
             for p in patches["post_input"]:
-                out = p({"img": img, "txt": txt, "img_ids": img_ids, "txt_ids": txt_ids})
+                out = p({"img": img, "txt": txt, "img_ids": img_ids, "txt_ids": txt_ids, "transformer_options": transformer_options})
                 img = out["img"]
                 txt = out["txt"]
                 img_ids = out["img_ids"]
@@ -125,6 +124,24 @@ class GMFlux(Flux):
             pe = self.pe_embedder(ids)
         else:
             pe = None
+
+        vec_orig = vec
+        txt_vec = vec
+        extra_kwargs = {}
+        if timestep_zero_index is not None:
+            modulation_dims = []
+            batch = vec.shape[0] // 2
+            vec_orig = vec_orig.reshape(2, batch, vec.shape[1]).movedim(0, 1)
+            invert = invert_slices(timestep_zero_index, img.shape[1])
+            for s in invert:
+                modulation_dims.append((s[0], s[1], 0))
+            for s in timestep_zero_index:
+                modulation_dims.append((s[0], s[1], 1))
+            extra_kwargs["modulation_dims_img"] = modulation_dims
+            txt_vec = vec[:batch]
+
+        if getattr(self.params, 'global_modulation', False):
+            vec = (self.double_stream_modulation_img(vec_orig), self.double_stream_modulation_txt(txt_vec))
 
         blocks_replace = patches_replace.get("dit", {})
         transformer_options["total_blocks"] = len(self.double_blocks)
@@ -139,7 +156,8 @@ class GMFlux(Flux):
                                                    vec=args["vec"],
                                                    pe=args["pe"],
                                                    attn_mask=args.get("attn_mask"),
-                                                   transformer_options=args.get("transformer_options"))
+                                                   transformer_options=args.get("transformer_options"),
+                                                   **extra_kwargs)
                     return out
 
                 out = blocks_replace[("double_block", i)]({"img": img,
@@ -157,7 +175,8 @@ class GMFlux(Flux):
                                  vec=vec,
                                  pe=pe,
                                  attn_mask=attn_mask,
-                                 transformer_options=transformer_options)
+                                 transformer_options=transformer_options,
+                                 **extra_kwargs)
 
             if control is not None:  # Controlnet
                 control_i = control.get("input")
@@ -174,8 +193,14 @@ class GMFlux(Flux):
         if getattr(self.params, 'global_modulation', False):
             vec, _ = self.single_stream_modulation(vec_orig)
 
+        extra_kwargs = {}
+        if timestep_zero_index is not None:
+            modulation_dims_combined = list(map(lambda x: (0 if x[0] == 0 else x[0] + txt.shape[1], x[1] + txt.shape[1], x[2]), modulation_dims))
+            extra_kwargs["modulation_dims"] = modulation_dims_combined
+
         transformer_options["total_blocks"] = len(self.single_blocks)
         transformer_options["block_type"] = "single"
+        transformer_options["img_slice"] = [txt.shape[1], img.shape[1]]
         for i, block in enumerate(self.single_blocks):
             transformer_options["block_index"] = i
             if ("single_block", i) in blocks_replace:
@@ -185,7 +210,8 @@ class GMFlux(Flux):
                                        vec=args["vec"],
                                        pe=args["pe"],
                                        attn_mask=args.get("attn_mask"),
-                                       transformer_options=args.get("transformer_options"))
+                                       transformer_options=args.get("transformer_options"),
+                                       **extra_kwargs)
                     return out
 
                 out = blocks_replace[("single_block", i)]({"img": img,
@@ -196,7 +222,7 @@ class GMFlux(Flux):
                                                           {"original_block": block_wrap})
                 img = out["img"]
             else:
-                img = block(img, vec=vec, pe=pe, attn_mask=attn_mask, transformer_options=transformer_options)
+                img = block(img, vec=vec, pe=pe, attn_mask=attn_mask, transformer_options=transformer_options, **extra_kwargs)
 
             if control is not None:  # Controlnet
                 control_o = control.get("output")
@@ -207,8 +233,13 @@ class GMFlux(Flux):
 
         img = img[:, txt.shape[1]:, ...]
 
-        hidden_states = self.final_layer(img, vec_orig)  # (N, T, patch_size ** 2 * out_channels)
-        return hidden_states, vec_orig
+        extra_kwargs = {}
+        if timestep_zero_index is not None:
+            extra_kwargs["modulation_dims"] = modulation_dims
+
+        hidden_states = self.final_layer(img, vec_orig, **extra_kwargs)
+        vec_out = vec_orig[:, 0] if vec_orig.ndim == 3 else vec_orig
+        return hidden_states, vec_out
 
     def _forward(self, x, timestep, context, y=None, guidance=None, ref_latents=None, control=None,
                  transformer_options={}, **kwargs):
@@ -217,22 +248,20 @@ class GMFlux(Flux):
 
         h_len = ((h_orig + (patch_size // 2)) // patch_size)
         w_len = ((w_orig + (patch_size // 2)) // patch_size)
-        if 'transformer_options' in inspect.signature(self.process_img).parameters:
-            img, img_ids = self.process_img(x, transformer_options=transformer_options)
-        else:  # fallback for older versions
-            img, img_ids = self.process_img(x)
+        img, img_ids = self.process_img(x, transformer_options=transformer_options)
         img_tokens = img.shape[1]
+
+        timestep_zero_index = None
         if ref_latents is not None:
+            ref_num_tokens = []
             h = 0
             w = 0
             index = 0
-            ref_latents_method = kwargs.get(
-                "ref_latents_method",
-                getattr(self.params, 'default_ref_method', 'offset')
-            )
+            ref_latents_method = kwargs.get("ref_latents_method", self.params.default_ref_method)
+            timestep_zero = ref_latents_method == "index_timestep_zero"
             for ref in ref_latents:
-                if ref_latents_method == "index":
-                    index += getattr(self.params, 'ref_index_scale', 1)
+                if ref_latents_method in ("index", "index_timestep_zero"):
+                    index += self.params.ref_index_scale
                     h_offset = 0
                     w_offset = 0
                 elif ref_latents_method == "uxo":
@@ -252,19 +281,26 @@ class GMFlux(Flux):
                     h = max(h, ref.shape[-2] + h_offset)
                     w = max(w, ref.shape[-1] + w_offset)
 
-                kontext, kontext_ids = self.process_img(ref, index=index, h_offset=h_offset, w_offset=w_offset)
+                kontext, kontext_ids = self.process_img(ref, index=index, h_offset=h_offset, w_offset=w_offset, transformer_options=transformer_options)
                 img = torch.cat([img, kontext], dim=1)
                 img_ids = torch.cat([img_ids, kontext_ids], dim=1)
+                ref_num_tokens.append(kontext.shape[1])
+            if timestep_zero and index > 0:
+                timestep = torch.cat([timestep, timestep * 0], dim=0)
+                timestep_zero_index = [[img_tokens, img_ids.shape[1]]]
+            transformer_options = transformer_options.copy()
+            transformer_options["reference_image_num_tokens"] = ref_num_tokens
 
         txt_ids = torch.zeros((bs, context.shape[1], len(self.params.axes_dim)), device=x.device, dtype=torch.float32)
 
-        if len(self.params.axes_dim) == 4:  # Flux 2
-            txt_ids[:, :, 3] = torch.linspace(
-                0, context.shape[1] - 1, steps=context.shape[1], device=x.device, dtype=torch.float32)
+        if len(self.params.txt_ids_dims) > 0:
+            for i in self.params.txt_ids_dims:
+                txt_ids[:, :, i] = torch.linspace(0, context.shape[1] - 1, steps=context.shape[1], device=x.device, dtype=torch.float32)
 
         hidden_states, vec = self.forward_orig(
             img, img_ids, context, txt_ids, timestep, y, guidance, control,
-            transformer_options, attn_mask=kwargs.get("attention_mask", None))
+            timestep_zero_index=timestep_zero_index, transformer_options=transformer_options,
+            attn_mask=kwargs.get("attention_mask", None))
         hidden_states = hidden_states[:, :img_tokens].to(self.proj_out_means.weight.dtype)
 
         bs = hidden_states.size(0)

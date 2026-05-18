@@ -1,4 +1,3 @@
-import inspect
 import torch
 from einops import rearrange
 from comfy.ldm.flux.model import Flux
@@ -13,22 +12,20 @@ class FluxMod(Flux):
 
         h_len = ((h_orig + (patch_size // 2)) // patch_size)
         w_len = ((w_orig + (patch_size // 2)) // patch_size)
-        if 'transformer_options' in inspect.signature(self.process_img).parameters:
-            img, img_ids = self.process_img(x, transformer_options=transformer_options)
-        else:  # fallback for older versions
-            img, img_ids = self.process_img(x)
+        img, img_ids = self.process_img(x, transformer_options=transformer_options)
         img_tokens = img.shape[1]
+
+        timestep_zero_index = None
         if ref_latents is not None:
+            ref_num_tokens = []
             h = 0
             w = 0
             index = 0
-            ref_latents_method = kwargs.get(
-                "ref_latents_method",
-                getattr(self.params, 'default_ref_method', 'offset')
-            )
+            ref_latents_method = kwargs.get("ref_latents_method", self.params.default_ref_method)
+            timestep_zero = ref_latents_method == "index_timestep_zero"
             for ref in ref_latents:
-                if ref_latents_method == "index":
-                    index += getattr(self.params, 'ref_index_scale', 1)
+                if ref_latents_method in ("index", "index_timestep_zero"):
+                    index += self.params.ref_index_scale
                     h_offset = 0
                     w_offset = 0
                 elif ref_latents_method == "uxo":
@@ -48,25 +45,26 @@ class FluxMod(Flux):
                     h = max(h, ref.shape[-2] + h_offset)
                     w = max(w, ref.shape[-1] + w_offset)
 
-                if 'transformer_options' in inspect.signature(self.process_img).parameters:
-                    kontext, kontext_ids = self.process_img(
-                        ref, index=index, h_offset=h_offset, w_offset=w_offset,
-                        transformer_options=transformer_options)
-                else:  # fallback for older versions
-                    kontext, kontext_ids = self.process_img(ref, index=index, h_offset=h_offset, w_offset=w_offset)
+                kontext, kontext_ids = self.process_img(ref, index=index, h_offset=h_offset, w_offset=w_offset, transformer_options=transformer_options)
                 img = torch.cat([img, kontext], dim=1)
                 img_ids = torch.cat([img_ids, kontext_ids], dim=1)
+                ref_num_tokens.append(kontext.shape[1])
+            if timestep_zero and index > 0:
+                timestep = torch.cat([timestep, timestep * 0], dim=0)
+                timestep_zero_index = [[img_tokens, img_ids.shape[1]]]
+            transformer_options = transformer_options.copy()
+            transformer_options["reference_image_num_tokens"] = ref_num_tokens
 
         txt_ids = torch.zeros((bs, context.shape[1], len(self.params.axes_dim)), device=x.device, dtype=torch.float32)
 
-        txt_ids_dims = getattr(self.params, "txt_ids_dims", [3] if len(self.params.axes_dim) == 4 else [])
-        for i in txt_ids_dims:
-            txt_ids[:, :, i] = torch.linspace(
-                0, context.shape[1] - 1, steps=context.shape[1], device=x.device, dtype=torch.float32)
+        if len(self.params.txt_ids_dims) > 0:
+            for i in self.params.txt_ids_dims:
+                txt_ids[:, :, i] = torch.linspace(0, context.shape[1] - 1, steps=context.shape[1], device=x.device, dtype=torch.float32)
 
         out = self.forward_orig(
             img, img_ids, context, txt_ids, timestep, y, guidance, control,
-            transformer_options=transformer_options, attn_mask=kwargs.get("attention_mask", None))
+            timestep_zero_index=timestep_zero_index, transformer_options=transformer_options,
+            attn_mask=kwargs.get("attention_mask", None))
         out = out[:, :img_tokens]
         return rearrange(
             out, "b (h w) (n c ph pw) -> b n c (h ph) (w pw)",
