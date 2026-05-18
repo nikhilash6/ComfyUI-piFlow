@@ -1,17 +1,17 @@
 # ComfyUI pi-Flow Nodes for Fast Few-Step Sampling
 
-<img src="https://raw.githubusercontent.com/Lakonik/piFlow/refs/heads/main/assets/teaser.jpg" alt=""/>
+<img src="https://raw.githubusercontent.com/Lakonik/LakonLab/refs/heads/main/docs/assets/piflow/piflow_teaser.jpg" alt=""/>
 
 
 **ComfyUI-piFlow** is a collection of custom nodes for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) that implement the pi-Flow few-step sampling workflow. All images in the above example were generated using pi-Flow with only 4 sampling steps.
 
 [pi-Flow](https://arxiv.org/abs/2510.14974) is a novel method for flow-based few-step generation. It achieves both high quality and diversity in generated images with as few as 4 sampling steps. Notably,  pi-Flow’s results generally align with the base model’s outputs and exhibit significantly higher diversity than those from DMD models (e.g., [Qwen-Image Lightning](https://github.com/ModelTC/Qwen-Image-Lightning)), as shown below.
 
-<img src="https://raw.githubusercontent.com/Lakonik/piFlow/refs/heads/main/assets/diversity_comparison.jpg" width="1000" alt=""/>
+<img src="https://raw.githubusercontent.com/Lakonik/LakonLab/refs/heads/main/docs/assets/piflow/diversity_comparison.jpg" width="1000" alt=""/>
 
 In addition, when using some photorealistic style LoRAs, pi-Flow produces better texture details than DMD models, as shown below (zoom in for best view).
 
-<img src="https://raw.githubusercontent.com/Lakonik/piFlow/refs/heads/main/assets/piflow_dmd_texture_comparison.jpg" width="1000" alt=""/>
+<img src="https://raw.githubusercontent.com/Lakonik/LakonLab/refs/heads/main/docs/assets/piflow/piflow_dmd_texture_comparison.jpg" width="1000" alt=""/>
 
 ## Installation
 
