@@ -14,7 +14,7 @@ class ModelSamplingPiFlow:
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "patch"
 
-    CATEGORY = "piflow"
+    CATEGORY = "LakonLab"
 
     def patch(self, model, shift):
         m = model.clone()

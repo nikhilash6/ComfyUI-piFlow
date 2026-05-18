@@ -4,6 +4,11 @@ from comfy import latent_formats, supported_models_base
 from . import model_base
 
 
+class OklabPixels(latent_formats.LatentFormat):
+    latent_channels = 3
+    spacial_downscale_ratio = 1
+
+
 class GMQwenImage(supported_models_base.BASE):
     unet_config = {
         "image_model": "gm_qwen_image",
@@ -188,4 +193,31 @@ class Flux2(supported_models_base.BASE):
         return None
 
 
-models = [GMQwenImage, QwenImage, GMFlux, Flux, GMFlux2, Flux2]
+class AsymFlux2(supported_models_base.BASE):
+    unet_config = {
+        "image_model": "asym_flux2",
+    }
+
+    sampling_settings = {
+        "shift": 17.0,
+    }
+
+    unet_extra_config = {}
+    latent_format = OklabPixels
+
+    memory_usage_factor = 3.1 * 2.36
+
+    supported_inference_dtypes = [torch.bfloat16, torch.float16, torch.float32]
+
+    vae_key_prefix = ["vae."]
+    text_encoder_key_prefix = ["text_encoders."]
+
+    def get_model(self, state_dict, prefix="", device=None):
+        out = model_base.AsymFlux2(self, device=device)
+        return out
+
+    def clip_target(self, state_dict={}):
+        return None
+
+
+models = [GMQwenImage, QwenImage, GMFlux, Flux, GMFlux2, Flux2, AsymFlux2]

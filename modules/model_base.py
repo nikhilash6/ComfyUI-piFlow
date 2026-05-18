@@ -218,3 +218,9 @@ class Flux2(_Flux2, BasePiFlow):
     def __init__(self, model_config, device=None):
         BasePiFlow.__init__(self, model_config, architectures.FluxMod, device=device)
         self.memory_usage_factor_conds = ("ref_latents",)
+
+
+class AsymFlux2(_Flux2):
+    def __init__(self, model_config, device=None):
+        _Flux.__init__(self, model_config, device=device, unet_model=architectures.AsymFlux)
+        self.memory_usage_factor_conds = ("ref_latents",)

@@ -53,7 +53,7 @@ class PiFlowSampler:
     OUTPUT_TOOLTIPS = ("The denoised latent.",)
     FUNCTION = "sample"
 
-    CATEGORY = "piflow"
+    CATEGORY = "LakonLab"
     DESCRIPTION = "Uses the provided model, positive conditioning to denoise the latent image."
 
     def sample(self, model, seed, steps, substeps, final_step_size_scale,

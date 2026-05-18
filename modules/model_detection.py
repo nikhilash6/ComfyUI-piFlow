@@ -65,6 +65,30 @@ def _infer_gm_logstd_cfg(sd: dict, prefix: str):
     return gm_num_logstd_layers, logstd_inner_dim, constant_logstd
 
 
+def detect_policy_config(metadata=None):
+    if metadata is not None and 'policy_config' in metadata:
+        return json.loads(metadata["policy_config"])
+    return {}
+
+
+def apply_quant_config(model_config, state_dict, key_prefix, metadata=None):
+    if detect_layer_quantization is not None:
+        # Detect per-layer quantization (mixed precision)
+        quant_config = detect_layer_quantization(state_dict, key_prefix)
+        if quant_config:
+            model_config.quant_config = quant_config
+            logging.info("Detected mixed precision quantization")
+
+    elif legacy_detect_layer_quantization is not None:
+        # Detect per-layer quantization (mixed precision)
+        layer_quant_config = legacy_detect_layer_quantization(metadata)
+        if layer_quant_config:
+            model_config.layer_quant_config = layer_quant_config
+            logging.info(f"Detected mixed precision quantization: {len(layer_quant_config)} layers quantized")
+
+    return model_config
+
+
 def detect_piflow_config(state_dict, key_prefix, metadata=None):
     base_config = detect_unet_config(state_dict, key_prefix, metadata=metadata)
     if base_config is None:
@@ -102,19 +126,17 @@ def detect_piflow_config(state_dict, key_prefix, metadata=None):
         unet_config["logstd_inner_dim"] = logstd_inner_dim
         unet_config["constant_logstd"] = constant_logstd
 
-    if metadata is not None and 'policy_config' in metadata:
-        policy_config = json.loads(metadata["policy_config"])
-    else:
-        policy_config = {}
-
-    return unet_config, policy_config
+    return unet_config, detect_policy_config(metadata)
 
 
 def model_config_from_piflow_config(unet_config, policy_config, state_dict=None):
     for model_config in models:
         if model_config.matches(unet_config, state_dict):
             model_config = model_config(unet_config)
-            model_config.policy_config.update(policy_config)
+            if policy_config:
+                if getattr(model_config, "policy_config", None) is None:
+                    model_config.policy_config = {}
+                model_config.policy_config.update(policy_config)
             return model_config
 
     logging.error("no match {}".format(unet_config))
@@ -142,18 +164,52 @@ def model_config_from_piflow(state_dict, key_prefix, metadata=None):
         else:
             model_config.optimizations["fp8"] = True
 
-    if detect_layer_quantization is not None:
-        # Detect per-layer quantization (mixed precision)
-        quant_config = detect_layer_quantization(state_dict, key_prefix)
-        if quant_config:
-            model_config.quant_config = quant_config
-            logging.info("Detected mixed precision quantization")
+    return apply_quant_config(model_config, state_dict, key_prefix, metadata)
 
-    elif legacy_detect_layer_quantization is not None:
-        # Detect per-layer quantization (mixed precision)
-        layer_quant_config = legacy_detect_layer_quantization(metadata)
-        if layer_quant_config:
-            model_config.layer_quant_config = layer_quant_config
-            logging.info(f"Detected mixed precision quantization: {len(layer_quant_config)} layers quantized")
 
-    return model_config
+def detect_asymflow_config(state_dict, key_prefix, metadata=None):
+    base_config = detect_unet_config(state_dict, key_prefix, metadata=metadata)
+    if base_config is None:
+        return None
+
+    has_asym_buffers = (
+        f"{key_prefix}proj_buffer" in state_dict
+        and f"{key_prefix}scale_buffer" in state_dict
+    )
+    if not has_asym_buffers:
+        return None
+
+    base_image_model = base_config.get("image_model")
+    if base_image_model != "flux2":
+        logging.error("AsymFlow detected, but only Flux2 Klein is supported right now: %s", base_config)
+        return None
+
+    unet_config = base_config.copy()
+    unet_config["image_model"] = "asym_flux2"
+
+    proj_buffer = state_dict.get(f"{key_prefix}proj_buffer")
+    if proj_buffer is not None:
+        patch_dim = proj_buffer.shape[0]
+        unet_config["base_rank"] = proj_buffer.shape[1]
+    else:
+        patch_dim = state_dict[f"{key_prefix}img_in.weight"].shape[1]
+        unet_config["base_rank"] = min(128, patch_dim)
+
+    # First supported AsymFlow architecture is RGB/Oklab pixel diffusion.
+    unet_config["in_channels"] = 3
+    unet_config["out_channels"] = 3
+    unet_config["patch_size"] = int(round((patch_dim // 3) ** 0.5))
+    unet_config["sigma_min"] = float(metadata.get("sigma_min", 1e-4)) if metadata is not None else 1e-4
+    unet_config["num_timesteps"] = float(metadata.get("num_timesteps", 1.0)) if metadata is not None else 1.0
+    return unet_config
+
+
+def model_config_from_asymflow(state_dict, key_prefix, metadata=None):
+    unet_config = detect_asymflow_config(state_dict, key_prefix, metadata=metadata)
+    if unet_config is None:
+        return None
+    model_config = model_config_from_piflow_config(unet_config, {}, state_dict)
+    if model_config is None:
+        return None
+
+    return apply_quant_config(model_config, state_dict, key_prefix, metadata)
