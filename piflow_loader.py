@@ -6,6 +6,7 @@ import importlib.machinery
 import logging
 import torch
 import comfy
+import comfy.ldm.flux.layers
 import folder_paths
 from comfy import model_management
 from comfy.utils import swap_scale_shift
@@ -20,6 +21,31 @@ except ImportError:
 old_flux_to_diffusers = comfy.utils.flux_to_diffusers
 
 
+def flux_norm_target_suffix():
+    """Match the active ComfyUI Flux RMSNorm state-dict name."""
+    if getattr(comfy.ldm.flux.layers, "RMSNorm", None) is None:
+        return "weight"
+    return "scale"
+
+
+def normalize_flux_norm_keys(state_dict, model_config):
+    if model_config.unet_config.get("image_model") not in ("flux", "flux2", "gm_flux", "gm_flux2"):
+        return
+
+    target_suffix = flux_norm_target_suffix()
+    source_suffix = "scale" if target_suffix == "weight" else "weight"
+    source_ending = f".{source_suffix}"
+
+    for key in list(state_dict.keys()):
+        if not key.endswith(source_ending):
+            continue
+        if ".norm.query_norm." not in key and ".norm.key_norm." not in key:
+            continue
+        target_key = f"{key[:-len(source_ending)]}.{target_suffix}"
+        if target_key not in state_dict:
+            state_dict[target_key] = state_dict.pop(key)
+
+
 def flux_to_diffusers(mmdit_config, output_prefix=""):
     # Todo: need a better way to determine Flux.1 vs Flux.2
     if mmdit_config.get('image_model', 'flux') in ('flux', 'gm_flux'):
@@ -30,6 +56,7 @@ def flux_to_diffusers(mmdit_config, output_prefix=""):
     hidden_size = mmdit_config.get("hidden_size", 0)
 
     key_map = {}
+    norm_suffix = flux_norm_target_suffix()
 
     # --- double blocks: diffusers transformer_blocks.{i} -> comfy double_blocks.{i} ---
     for index in range(n_double_layers):
@@ -62,10 +89,10 @@ def flux_to_diffusers(mmdit_config, output_prefix=""):
             "ff_context.linear_out.weight": "txt_mlp.2.weight",
 
             # norms
-            "attn.norm_q.weight": "img_attn.norm.query_norm.scale",
-            "attn.norm_k.weight": "img_attn.norm.key_norm.scale",
-            "attn.norm_added_q.weight": "txt_attn.norm.query_norm.scale",
-            "attn.norm_added_k.weight": "txt_attn.norm.key_norm.scale",
+            "attn.norm_q.weight": f"img_attn.norm.query_norm.{norm_suffix}",
+            "attn.norm_k.weight": f"img_attn.norm.key_norm.{norm_suffix}",
+            "attn.norm_added_q.weight": f"txt_attn.norm.query_norm.{norm_suffix}",
+            "attn.norm_added_k.weight": f"txt_attn.norm.key_norm.{norm_suffix}",
         }
         for k_from, k_to in block_map.items():
             key_map[f"{prefix_from}.{k_from}"] = f"{prefix_to}.{k_to}"
@@ -82,8 +109,8 @@ def flux_to_diffusers(mmdit_config, output_prefix=""):
         key_map[f"{prefix_from}.attn.to_out.weight"] = f"{prefix_to}.linear2.weight"
 
         # norms
-        key_map[f"{prefix_from}.attn.norm_q.weight"] = f"{prefix_to}.norm.query_norm.scale"
-        key_map[f"{prefix_from}.attn.norm_k.weight"] = f"{prefix_to}.norm.key_norm.scale"
+        key_map[f"{prefix_from}.attn.norm_q.weight"] = f"{prefix_to}.norm.query_norm.{norm_suffix}"
+        key_map[f"{prefix_from}.attn.norm_k.weight"] = f"{prefix_to}.norm.key_norm.{norm_suffix}"
 
     # --- top-level modules ---
     MAP_BASIC = {
@@ -168,11 +195,14 @@ else:
     GGMLOps = _nodes.GGMLOps
 
 
-def convert_diffusers_to_comfyui(state_dict, diffusers_weight, comfy_weight_map):
+def convert_diffusers_to_comfyui(state_dict, diffusers_weight, comfy_weight_map, cloned_weight_keys=None):
     """Modified from convert_diffusers_mmdit
 
-    Note: This is an in-place operation. Tensors in state_dict and diffusers_weight may be updated in place.
+    Note: This updates state_dict in place. Source tensors are never modified.
     """
+    if cloned_weight_keys is None:
+        cloned_weight_keys = set()
+
     if isinstance(comfy_weight_map, str):
         comfy_weight_key = comfy_weight_map
         state_dict[comfy_weight_key] = diffusers_weight
@@ -183,10 +213,17 @@ def convert_diffusers_to_comfyui(state_dict, diffusers_weight, comfy_weight_map)
         else:
             weight_convert_fun = lambda a: a
         offset = comfy_weight_map[1]
+        converted_weight = weight_convert_fun(diffusers_weight)
         if offset is not None:
             updated_weight = state_dict.get(comfy_weight_key, None)
             if updated_weight is None:
-                updated_weight = diffusers_weight
+                updated_shape = list(diffusers_weight.shape)
+                updated_shape[offset[0]] = offset[1] + offset[2]
+                updated_weight = torch.empty(
+                    updated_shape, device=diffusers_weight.device, dtype=diffusers_weight.dtype)
+            elif comfy_weight_key not in cloned_weight_keys:
+                updated_weight = updated_weight.clone()
+                cloned_weight_keys.add(comfy_weight_key)
             if updated_weight.shape[offset[0]] < offset[1] + offset[2]:
                 expanded_shape = list(diffusers_weight.shape)
                 expanded_shape[offset[0]] = offset[1] + offset[2]
@@ -195,10 +232,11 @@ def convert_diffusers_to_comfyui(state_dict, diffusers_weight, comfy_weight_map)
                 _updated_weight = expanded_weight.narrow(offset[0], 0, updated_weight.shape[offset[0]])
                 _updated_weight[:] = updated_weight
                 updated_weight = expanded_weight
+                cloned_weight_keys.add(comfy_weight_key)
             target_slice = updated_weight.narrow(offset[0], offset[1], offset[2])
+            target_slice[:] = converted_weight
         else:
-            target_slice = updated_weight = diffusers_weight
-        target_slice[:] = weight_convert_fun(diffusers_weight)
+            updated_weight = converted_weight
         state_dict[comfy_weight_key] = updated_weight
     return comfy_weight_key
 
@@ -232,6 +270,7 @@ def load_piflow_model_state_dict(
     if adapter_sd is not None:
         updated_weight_layers = set()
         updated_keys = set()
+        cloned_weight_keys = set()
 
         key_mapping = {}
         base_image_model = base_unet_config["image_model"]
@@ -246,7 +285,8 @@ def load_piflow_model_state_dict(
                     lora_sd[k] = adapter_sd[k]
             else:
                 if k in key_mapping:  # convert_diffusers_mmdit
-                    comfy_weight_key = convert_diffusers_to_comfyui(new_sd, adapter_sd[k], key_mapping[k])
+                    comfy_weight_key = convert_diffusers_to_comfyui(
+                        new_sd, adapter_sd[k], key_mapping[k], cloned_weight_keys=cloned_weight_keys)
                 else:
                     new_sd[k] = adapter_sd[k]
                     comfy_weight_key = k
@@ -274,6 +314,7 @@ def load_piflow_model_state_dict(
     model_config = model_config_from_piflow(new_sd, "", metadata=metadata)
     if model_config is None:
         return None, None
+    normalize_flux_norm_keys(new_sd, model_config)
 
     offload_device = model_management.unet_offload_device()
     unet_weight_dtype = list(model_config.supported_inference_dtypes)

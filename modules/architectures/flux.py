@@ -48,19 +48,25 @@ class FluxMod(Flux):
                     h = max(h, ref.shape[-2] + h_offset)
                     w = max(w, ref.shape[-1] + w_offset)
 
-                kontext, kontext_ids = self.process_img(ref, index=index, h_offset=h_offset, w_offset=w_offset)
+                if 'transformer_options' in inspect.signature(self.process_img).parameters:
+                    kontext, kontext_ids = self.process_img(
+                        ref, index=index, h_offset=h_offset, w_offset=w_offset,
+                        transformer_options=transformer_options)
+                else:  # fallback for older versions
+                    kontext, kontext_ids = self.process_img(ref, index=index, h_offset=h_offset, w_offset=w_offset)
                 img = torch.cat([img, kontext], dim=1)
                 img_ids = torch.cat([img_ids, kontext_ids], dim=1)
 
         txt_ids = torch.zeros((bs, context.shape[1], len(self.params.axes_dim)), device=x.device, dtype=torch.float32)
 
-        if len(self.params.axes_dim) == 4:  # Flux 2
-            txt_ids[:, :, 3] = torch.linspace(
+        txt_ids_dims = getattr(self.params, "txt_ids_dims", [3] if len(self.params.axes_dim) == 4 else [])
+        for i in txt_ids_dims:
+            txt_ids[:, :, i] = torch.linspace(
                 0, context.shape[1] - 1, steps=context.shape[1], device=x.device, dtype=torch.float32)
 
         out = self.forward_orig(
             img, img_ids, context, txt_ids, timestep, y, guidance, control,
-            transformer_options, attn_mask=kwargs.get("attention_mask", None))
+            transformer_options=transformer_options, attn_mask=kwargs.get("attention_mask", None))
         out = out[:, :img_tokens]
         return rearrange(
             out, "b (h w) (n c ph pw) -> b n c (h ph) (w pw)",
