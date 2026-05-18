@@ -15,7 +15,7 @@ In addition, when using some photorealistic style LoRAs, pi-Flow produces better
 
 ## Installation
 
-**This repo requires ComfyUI version 0.3.64 or higher**. Make sure your ComfyUI is up to date before installing.
+**This repo (version 1.2.0) requires ComfyUI version 0.17.0 or higher**. Older ComfyUI releases are no longer supported.
 
 ### ComfyUI Manager
 
@@ -31,11 +31,11 @@ git clone https://github.com/Lakonik/ComfyUI-piFlow
 
 ## Workflows
 
-This repo provides image generation [workflows](workflows) based on Qwen-Image, FLUX.1 dev, and FLUX.2 dev. 
+This repo provides image generation [workflows](workflows) based on Qwen-Image, FLUX.1 dev, and FLUX.2 dev.
 
 ### pi-Qwen-Image
 
-Currently supports the Qwen-Image text-to-image base model (and possibly some of its customized versions). Qwen-Image-Edit may be supported in the future.
+Currently supports the Qwen-Image text-to-image base model (and possibly some of its customized versions).
 
 Please download the image below and drag it into ComfyUI to load the pi-Qwen-Image workflow.  
 
@@ -168,6 +168,12 @@ Please visit the official [piFlow](https://github.com/lakonik/piflow) repo for m
 This code repository is licensed under the Apache-2.0 License. Models used in the workflows are subject to their own respective licenses.
 
 ## Changelog
+
+- **v1.2.0** (2026-05-17)
+  - Target latest ComfyUI only (`requires-comfyui >= 0.17.0`); older releases are no longer supported.
+  - Update Qwen, Flux, and Flux.2 model shims for current ComfyUI reference/edit conditioning APIs.
+  - Fix Flux/Flux.2 loader compatibility with current normalization key names and latest model loading behavior.
+  - Add sampler support for multiple active/regional pi-Flow conditionings through composite policy blending.
 
 - **v1.1.5** (2026-01-18)
   - Fix a compatibility issue with ComfyUI-GGUF commit `58625e1`.
