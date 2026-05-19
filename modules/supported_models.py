@@ -5,6 +5,7 @@ from . import model_base
 
 
 class OklabPixels(latent_formats.LatentFormat):
+    is_pixel_latent = True
     latent_channels = 3
     spacial_downscale_ratio = 1
 
