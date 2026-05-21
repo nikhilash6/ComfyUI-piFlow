@@ -149,12 +149,16 @@ class GMFlux2(supported_models_base.BASE):
     unet_extra_config = {}
     latent_format = latent_formats.Flux2
 
-    memory_usage_factor = 3.1 * (2.0 * 2.0) * 2.36
+    memory_usage_factor = 3.1
 
     supported_inference_dtypes = [torch.bfloat16, torch.float16, torch.float32]
 
     vae_key_prefix = ["vae."]
     text_encoder_key_prefix = ["text_encoders."]
+
+    def __init__(self, unet_config):
+        super().__init__(unet_config)
+        self.memory_usage_factor = self.memory_usage_factor * (2.0 * 2.0) * (unet_config["hidden_size"] / 2604)
 
     def get_model(self, state_dict, prefix="", device=None):
         out = model_base.GMFlux2(self, device=device)
@@ -179,12 +183,16 @@ class Flux2(supported_models_base.BASE):
     unet_extra_config = {}
     latent_format = latent_formats.Flux2
 
-    memory_usage_factor = 3.1 * (2.0 * 2.0) * 2.36
+    memory_usage_factor = 3.1
 
     supported_inference_dtypes = [torch.bfloat16, torch.float16, torch.float32]
 
     vae_key_prefix = ["vae."]
     text_encoder_key_prefix = ["text_encoders."]
+
+    def __init__(self, unet_config):
+        super().__init__(unet_config)
+        self.memory_usage_factor = self.memory_usage_factor * (2.0 * 2.0) * (unet_config['hidden_size'] / 2604)
 
     def get_model(self, state_dict, prefix="", device=None):
         out = model_base.Flux2(self, device=device)
@@ -206,12 +214,18 @@ class AsymFlux2(supported_models_base.BASE):
     unet_extra_config = {}
     latent_format = OklabPixels
 
-    memory_usage_factor = 3.1 * (2.0 * 2.0) * 2.36
+    memory_usage_factor = 3.1
 
     supported_inference_dtypes = [torch.bfloat16, torch.float16, torch.float32]
 
     vae_key_prefix = ["vae."]
     text_encoder_key_prefix = ["text_encoders."]
+
+    def __init__(self, unet_config):
+        super().__init__(unet_config)
+        hidden_size = unet_config["hidden_size"]
+        patch_size = unet_config["patch_size"]
+        self.memory_usage_factor = self.memory_usage_factor * (2.0 * 2.0) * (hidden_size / 2604) / (patch_size * patch_size)
 
     def get_model(self, state_dict, prefix="", device=None):
         out = model_base.AsymFlux2(self, device=device)

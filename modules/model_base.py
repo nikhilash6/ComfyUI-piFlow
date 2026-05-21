@@ -224,14 +224,3 @@ class AsymFlux2(_Flux2):
     def __init__(self, model_config, device=None):
         _Flux.__init__(self, model_config, device=device, unet_model=architectures.AsymFlux)
         self.memory_usage_factor_conds = ("ref_latents",)
-
-    def memory_required(self, input_shape, cond_shapes={}):
-        # Pixel-space input -> rebase to /8 latent for Flux2's predictor.
-        def r(s):
-            s = list(s)
-            if len(s) >= 4:
-                s[-2] //= 8
-                s[-1] //= 8
-            return tuple(s)
-        cs = {k: [r(s) for s in v] for k, v in cond_shapes.items()}
-        return super().memory_required(r(input_shape), cs)
