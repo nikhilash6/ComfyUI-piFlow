@@ -206,7 +206,7 @@ class AsymFlux2(supported_models_base.BASE):
     unet_extra_config = {}
     latent_format = OklabPixels
 
-    memory_usage_factor = 3.1 * 2.36
+    memory_usage_factor = 3.1 * (2.0 * 2.0) * 2.36
 
     supported_inference_dtypes = [torch.bfloat16, torch.float16, torch.float32]
 
