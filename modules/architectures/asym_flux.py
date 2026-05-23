@@ -1,5 +1,6 @@
 import torch
-from einops import rearrange
+import comfy.ldm.common_dit
+from einops import rearrange, repeat
 from comfy.ldm.flux.model import Flux
 from .asymflow import AsymFlowMixin
 
@@ -22,6 +23,38 @@ class AsymFlux(AsymFlowMixin, Flux):
         self.num_timesteps = num_timesteps
         self.init_asymflow_buffers(self.in_channels, self.base_rank)
 
+    def _patch_len(self, size):
+        return (size + self.patch_size - 1) // self.patch_size
+
+    def process_img(self, x, index=0, h_offset=0, w_offset=0, transformer_options={}):
+        bs, c, h, w = x.shape
+        patch_size = self.patch_size
+        x = comfy.ldm.common_dit.pad_to_patch_size(x, (patch_size, patch_size))
+
+        img = rearrange(x, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=patch_size, pw=patch_size)
+        h_len = self._patch_len(h)
+        w_len = self._patch_len(w)
+        h_offset = self._patch_len(h_offset)
+        w_offset = self._patch_len(w_offset)
+
+        steps_h = h_len
+        steps_w = w_len
+
+        rope_options = transformer_options.get("rope_options", None)
+        if rope_options is not None:
+            h_len = (h_len - 1.0) * rope_options.get("scale_y", 1.0) + 1.0
+            w_len = (w_len - 1.0) * rope_options.get("scale_x", 1.0) + 1.0
+
+            index += rope_options.get("shift_t", 0.0)
+            h_offset += rope_options.get("shift_y", 0.0)
+            w_offset += rope_options.get("shift_x", 0.0)
+
+        img_ids = torch.zeros((steps_h, steps_w, len(self.params.axes_dim)), device=x.device, dtype=torch.float32)
+        img_ids[:, :, 0] = img_ids[:, :, 1] + index
+        img_ids[:, :, 1] = img_ids[:, :, 1] + torch.linspace(h_offset, h_len - 1 + h_offset, steps=steps_h, device=x.device, dtype=torch.float32).unsqueeze(1)
+        img_ids[:, :, 2] = img_ids[:, :, 2] + torch.linspace(w_offset, w_len - 1 + w_offset, steps=steps_w, device=x.device, dtype=torch.float32).unsqueeze(0)
+        return img, repeat(img_ids, "h w c -> b (h w) c", b=bs)
+
     def _forward(
         self,
         x,
@@ -37,8 +70,8 @@ class AsymFlux(AsymFlowMixin, Flux):
         bs, c, h_orig, w_orig = x.shape
         patch_size = self.patch_size
 
-        h_len = ((h_orig + (patch_size // 2)) // patch_size)
-        w_len = ((w_orig + (patch_size // 2)) // patch_size)
+        h_len = self._patch_len(h_orig)
+        w_len = self._patch_len(w_orig)
         img, img_ids = self.process_img(x, transformer_options=transformer_options)
         img_tokens = img.shape[1]
         x_t_packed = img
