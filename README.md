@@ -41,6 +41,9 @@ This code repository is licensed under the Apache-2.0 License. Models used in th
 
 ## Changelog
 
+- **v1.3.2** (2026-05-23)
+  - Fix AsymFLUX.2 patchification rounding.
+
 - **v1.3.1** (2026-05-20)
   - Fix AsymFLUX.2 VRAM predictor ([#32](https://github.com/Lakonik/ComfyUI-piFlow/pull/32)).
 
